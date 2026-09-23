@@ -1,0 +1,50 @@
+{
+    "active_repos": [
+        "C:/Users/Owner/Documents/Programming/minecraft/Applied-Energistics-2-main/Applied-Energistics-2-main",
+        "C:/Users/Owner/Documents/Programming/minecraft/minecraft-creator-main"
+    ],
+    "cart": {
+        "ae2:64k_crafting_storage": 1,
+        "ae2:4k_crafting_storage": 2,
+        "ae2:drive": 4,
+        "ae2:crafting_monitor": 1,
+        "ae2:crafting_accelerator": 10,
+        "ae2:pattern_provider": 21,
+        "ae2:inscriber": 5,
+        "ae2:charger": 4,
+        "ae2:interface": 5,
+        "ae2:controller": 3,
+        "ae2:cell_workbench": 1,
+        "ae2:io_port": 1,
+        "ae2:energy_acceptor": 1,
+        "ae2:pattern_access_terminal": 1,
+        "ae2:pattern_encoding_terminal": 1,
+        "ae2:crafting_terminal": 1,
+        "ae2:storage_bus": 18,
+        "ae2:annihilation_plane": 4,
+        "ae2:molecular_assembler": 56,
+        "ae2:growth_accelerator": 3,
+        "ae2:wireless_access_point": 1,
+        "ae2:energy_cell": 1
+    },
+    "theme": "Dark Mode",
+    "namespace_mappings": {
+        "#c": "minecraft",
+        "c": "minecraft",
+        "#forge": "minecraft",
+        "forge": "minecraft"
+    },
+    "item_caps": {
+        "ae2:calculation_processor_press": 1.0,
+        "ae2:silicon_press": 1.0,
+        "ae2:logic_processor_press": 1.0,
+        "ae2:engineering_processor_press": 1.0
+    },
+    "material_replacements": {},
+    "raw_overrides": [
+        "ae2:calculation_processor_press",
+        "ae2:engineering_processor_press",
+        "ae2:logic_processor_press",
+        "ae2:silicon_press"
+    ]
+}
