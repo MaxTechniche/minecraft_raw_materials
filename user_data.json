@@ -1,20 +1,23 @@
 {
     "active_repos": [
         "/Users/jacob.maxfield/Documents/personal/minecraft_raw_materials/minecraft-creator-main",
-        "/Users/jacob.maxfield/Documents/personal/minecraft_raw_materials/Applied-Energistics-2-main"
+        "/Users/jacob.maxfield/Documents/personal/minecraft_raw_materials/Applied-Energistics-2-main",
+        "C:/Users/Owner/Documents/Programming/minecraft/Applied-Energistics-2-main",
+        "C:/Users/Owner/Documents/Programming/minecraft/minecraft-creator-main"
     ],
     "cart": {
-        "ae2:dense_energy_cell": 1,
-        "ae2:io_port": 1
+        "ae2:64k_crafting_storage": 1
     },
     "namespace_mappings": {},
     "preferred_recipes": {
-        "ae2:fluix_glass_cable": 1
+        "ae2:fluix_glass_cable": 0,
+        "ae2:interface": 0
     },
     "item_caps": {},
     "material_replacements": {
         "minecraft:redstone": "#c:redstone_dust",
-        "minecraft:iron_ingot": "#c:iron_ingot"
+        "minecraft:iron_ingot": "#c:iron_ingot",
+        "minecraft:crimson_stem": "minecraft:log"
     },
     "raw_overrides": []
 }
