@@ -1,14 +1,15 @@
 import os
 import sys
 import json
+import math
 import threading
 from collections import defaultdict
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QLineEdit, QSpinBox, QDoubleSpinBox, QListWidget, QListWidgetItem,
-    QTreeWidget, QTreeWidgetItem, QTextEdit, QGroupBox, QSplitter, QScrollArea,
-    QDialog, QFileDialog, QHeaderView, QMessageBox
+    QLabel, QPushButton, QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox,
+    QListWidget, QTreeWidget, QTreeWidgetItem, QTextEdit, QGroupBox,
+    QSplitter, QScrollArea, QDialog, QFileDialog, QHeaderView
 )
 from PySide6.QtCore import Qt, Signal, QObject
 from PySide6.QtGui import QFont
@@ -16,15 +17,8 @@ from PySide6.QtGui import QFont
 
 # ==================== CROSS-PLATFORM PATH HELPER ====================
 def get_user_data_filepath(filename="user_data.json"):
-    """
-    Resolves a cross-platform directory for application configuration storage:
-    - Windows: %APPDATA%\ModMaterialCalculator\
-    - macOS: ~/Library/Application Support/ModMaterialCalculator/
-    - Linux/Unix: ~/.config/ModMaterialCalculator/
-    Falls back to local directory if local file already exists or permissions fail.
-    """
     if os.path.exists(filename):
-        return filename  # Portable mode
+        return filename
 
     if sys.platform.startswith("win"):
         base_dir = os.environ.get("APPDATA", os.path.expanduser("~"))
@@ -48,7 +42,7 @@ class AdvancedRecipeResolver:
         self.raw_overrides = set()
         self.item_caps = {}  
         self.material_replacements = {}  
-        self.preferred_recipes = {}  # item_id -> recipe_index in self.recipes[item_id]
+        self.preferred_recipes = {}  
         self.all_known_items = set()  
         self.namespace_mappings = {}
 
@@ -273,6 +267,7 @@ class AdvancedRecipeResolver:
 
     def get_raw_materials(self, item_id, target_amount=1.0, visited=None, item_usage_tracker=None):
         item_id = self.normalize_id(item_id)
+        target_amount = int(math.ceil(target_amount))
         
         if item_id in self.material_replacements:
             item_id = self.material_replacements[item_id]
@@ -284,7 +279,7 @@ class AdvancedRecipeResolver:
 
         raw_totals = defaultdict(float)
         method_steps = defaultdict(lambda: defaultdict(lambda: {
-            "amount": 0.0,
+            "amount": 0,
             "inputs": defaultdict(float)
         }))
 
@@ -301,6 +296,8 @@ class AdvancedRecipeResolver:
             remaining_allowance = max(0.0, cap - already_used)
             eff_target_amount = min(target_amount, remaining_allowance)
 
+        eff_target_amount = int(math.ceil(eff_target_amount))
+
         if eff_target_amount <= 0:
             return dict(raw_totals), method_steps
 
@@ -311,7 +308,6 @@ class AdvancedRecipeResolver:
         candidate_recipes = self.recipes[item_id]
         chosen_recipe = None
 
-        # Check for user-selected preferred recipe option first
         if item_id in self.preferred_recipes:
             pref_idx = self.preferred_recipes[item_id]
             if 0 <= pref_idx < len(candidate_recipes):
@@ -335,7 +331,8 @@ class AdvancedRecipeResolver:
 
         recipe = chosen_recipe
         craft_yield = recipe["count"] if recipe["count"] > 0 else 1
-        crafts_needed = eff_target_amount / craft_yield
+        
+        crafts_needed = int(math.ceil(eff_target_amount / craft_yield))
         method = recipe["method"]
 
         method_steps[method][item_id]["amount"] += eff_target_amount
@@ -356,6 +353,8 @@ class AdvancedRecipeResolver:
                 already_used_input = item_usage_tracker[norm_input_id]
                 rem_allowance = max(0.0, inp_cap - already_used_input)
                 eff_req = min(raw_req, rem_allowance)
+
+            eff_req = int(math.ceil(eff_req))
 
             if eff_req > 0:
                 method_steps[method][item_id]["inputs"][norm_input_id] += eff_req
@@ -398,7 +397,6 @@ class RecipeViewerDialog(QDialog):
         header.setAlignment(Qt.AlignCenter)
         layout.addWidget(header)
 
-        # Scroll Area for Recipe Options
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll_content = QWidget()
@@ -485,80 +483,6 @@ class RecipeViewerDialog(QDialog):
                 self.callback()
 
 
-# ==================== RECIPE PREFERENCE MANAGER DIALOG ====================
-class RecipePreferenceManagerDialog(QDialog):
-    def __init__(self, parent, resolver, callback=None):
-        super().__init__(parent)
-        self.setWindowTitle("Manage Preferred Crafting Recipes")
-        self.resize(620, 420)
-        self.resolver = resolver
-        self.callback = callback
-
-        layout = QVBoxLayout(self)
-
-        label = QLabel("Active User Recipe Preferences:")
-        label.setFont(QFont("Helvetica", 10, QFont.Bold))
-        layout.addWidget(label)
-
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Item ID", "Preferred Option", "Method", "Yields & Inputs"])
-        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.tree.header().setSectionResizeMode(3, QHeaderView.Stretch)
-        layout.addWidget(self.tree)
-
-        self.refresh_tree()
-
-        btn_layout = QHBoxLayout()
-        remove_btn = QPushButton("Remove Selected Preference")
-        remove_btn.clicked.connect(self.remove_preference)
-        btn_layout.addWidget(remove_btn)
-
-        clear_all_btn = QPushButton("Clear All Recipe Preferences")
-        clear_all_btn.clicked.connect(self.clear_all_preferences)
-        btn_layout.addWidget(clear_all_btn)
-
-        btn_layout.addStretch()
-
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        btn_layout.addWidget(close_btn)
-
-        layout.addLayout(btn_layout)
-
-    def refresh_tree(self):
-        self.tree.clear()
-        for item_id, pref_idx in list(self.resolver.preferred_recipes.items()):
-            recipes = self.resolver.recipes.get(item_id, [])
-            if 0 <= pref_idx < len(recipes):
-                r = recipes[pref_idx]
-                inputs_str = ", ".join([f"{q}x {ing}" for ing, q in r["inputs"].items()])
-                opt_str = f"Option {pref_idx + 1}"
-                yield_str = f"{r['count']}x ({inputs_str})"
-                tree_item = QTreeWidgetItem([item_id, opt_str, r["method"], yield_str])
-            else:
-                tree_item = QTreeWidgetItem([item_id, f"Option {pref_idx + 1}", "Unknown", "Invalid Index"])
-            self.tree.addTopLevelItem(tree_item)
-
-    def remove_preference(self):
-        selected = self.tree.selectedItems()
-        if selected:
-            item_id = selected[0].text(0)
-            if item_id in self.resolver.preferred_recipes:
-                del self.resolver.preferred_recipes[item_id]
-                self.refresh_tree()
-                if self.callback:
-                    self.callback()
-
-    def clear_all_preferences(self):
-        if self.resolver.preferred_recipes:
-            self.resolver.preferred_recipes.clear()
-            self.refresh_tree()
-            if self.callback:
-                self.callback()
-
-
 # ==================== MATERIAL REPLACEMENT DIALOG ====================
 class MaterialReplacementDialog(QDialog):
     def __init__(self, parent, resolver, target_item, callback):
@@ -641,294 +565,6 @@ class MaterialReplacementDialog(QDialog):
         self.accept()
 
 
-# ==================== MATERIAL REPLACEMENT MANAGER DIALOG ====================
-class MaterialReplacementManagerDialog(QDialog):
-    def __init__(self, parent, resolver):
-        super().__init__(parent)
-        self.setWindowTitle("Manage Material Replacements & Overrides")
-        self.resize(580, 420)
-        self.resolver = resolver
-
-        layout = QVBoxLayout(self)
-
-        label = QLabel("Active Material Replacements & Custom Overrides:")
-        label.setFont(QFont("Helvetica", 10, QFont.Bold))
-        layout.addWidget(label)
-
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Original Material / Tag", "Replacement Material"])
-        self.tree.header().setSectionResizeMode(QHeaderView.Stretch)
-        layout.addWidget(self.tree)
-
-        self.refresh_tree()
-
-        entry_layout = QHBoxLayout()
-        entry_layout.addWidget(QLabel("Original:"))
-        self.src_entry = QLineEdit()
-        self.src_entry.setPlaceholderText("e.g. #c:copper_ingot")
-        entry_layout.addWidget(self.src_entry)
-
-        entry_layout.addWidget(QLabel("Replace With:"))
-        self.tgt_entry = QLineEdit()
-        self.tgt_entry.setPlaceholderText("e.g. minecraft:copper_ingot")
-        entry_layout.addWidget(self.tgt_entry)
-
-        add_btn = QPushButton("Add/Update Override")
-        add_btn.clicked.connect(self.add_override)
-        entry_layout.addWidget(add_btn)
-
-        layout.addLayout(entry_layout)
-
-        btn_layout = QHBoxLayout()
-        remove_btn = QPushButton("Remove Selected Override")
-        remove_btn.clicked.connect(self.remove_override)
-        btn_layout.addWidget(remove_btn)
-
-        clear_all_btn = QPushButton("Clear All Overrides")
-        clear_all_btn.clicked.connect(self.clear_all_overrides)
-        btn_layout.addWidget(clear_all_btn)
-
-        btn_layout.addStretch()
-
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        btn_layout.addWidget(close_btn)
-
-        layout.addLayout(btn_layout)
-
-    def refresh_tree(self):
-        self.tree.clear()
-        for k, v in self.resolver.material_replacements.items():
-            item = QTreeWidgetItem([k, v])
-            self.tree.addTopLevelItem(item)
-
-    def add_override(self):
-        src = self.src_entry.text().strip()
-        tgt = self.tgt_entry.text().strip()
-        if src and tgt:
-            self.resolver.material_replacements[src] = tgt
-            self.refresh_tree()
-            self.src_entry.clear()
-            self.tgt_entry.clear()
-
-    def remove_override(self):
-        selected = self.tree.selectedItems()
-        if selected:
-            src = selected[0].text(0)
-            if src in self.resolver.material_replacements:
-                del self.resolver.material_replacements[src]
-                self.refresh_tree()
-
-    def clear_all_overrides(self):
-        if self.resolver.material_replacements:
-            self.resolver.material_replacements.clear()
-            self.refresh_tree()
-
-
-# ==================== NAMESPACE LINKING DIALOG ====================
-class NamespaceMappingDialog(QDialog):
-    def __init__(self, parent, resolver):
-        super().__init__(parent)
-        self.setWindowTitle("Optional Namespace & Tag Custom Remappings")
-        self.resize(520, 400)
-        self.resolver = resolver
-
-        layout = QVBoxLayout(self)
-
-        label = QLabel("Configure Custom Namespace/Tag Remappings (Optional):")
-        label.setFont(QFont("Helvetica", 10, QFont.Bold))
-        layout.addWidget(label)
-
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Source Namespace/Tag", "Target Namespace"])
-        self.tree.header().setSectionResizeMode(QHeaderView.Stretch)
-        layout.addWidget(self.tree)
-
-        self.refresh_tree()
-
-        entry_layout = QHBoxLayout()
-        entry_layout.addWidget(QLabel("From:"))
-        self.src_entry = QLineEdit()
-        entry_layout.addWidget(self.src_entry)
-
-        entry_layout.addWidget(QLabel("To:"))
-        self.tgt_entry = QLineEdit()
-        entry_layout.addWidget(self.tgt_entry)
-
-        add_btn = QPushButton("Add/Update Link")
-        add_btn.clicked.connect(self.add_mapping)
-        entry_layout.addWidget(add_btn)
-
-        layout.addLayout(entry_layout)
-
-        btn_layout = QHBoxLayout()
-        remove_btn = QPushButton("Remove Selected Link")
-        remove_btn.clicked.connect(self.remove_mapping)
-        btn_layout.addWidget(remove_btn)
-
-        btn_layout.addStretch()
-
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        btn_layout.addWidget(close_btn)
-
-        layout.addLayout(btn_layout)
-
-    def refresh_tree(self):
-        self.tree.clear()
-        for k, v in self.resolver.namespace_mappings.items():
-            item = QTreeWidgetItem([k, v])
-            self.tree.addTopLevelItem(item)
-
-    def add_mapping(self):
-        src = self.src_entry.text().strip()
-        tgt = self.tgt_entry.text().strip()
-        if src and tgt:
-            self.resolver.namespace_mappings[src] = tgt
-            self.refresh_tree()
-            self.src_entry.clear()
-            self.tgt_entry.clear()
-
-    def remove_mapping(self):
-        selected = self.tree.selectedItems()
-        if selected:
-            src = selected[0].text(0)
-            if src in self.resolver.namespace_mappings:
-                del self.resolver.namespace_mappings[src]
-                self.refresh_tree()
-
-
-# ==================== ITEM MAX CAP DIALOG ====================
-class ItemCapDialog(QDialog):
-    def __init__(self, parent, resolver):
-        super().__init__(parent)
-        self.setWindowTitle("Item Max Crafting Caps")
-        self.resize(520, 400)
-        self.resolver = resolver
-
-        layout = QVBoxLayout(self)
-
-        label = QLabel("Set Maximum Craftable Limits per Item:")
-        label.setFont(QFont("Helvetica", 10, QFont.Bold))
-        layout.addWidget(label)
-
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Item ID", "Max Craft Limit"])
-        self.tree.header().setSectionResizeMode(QHeaderView.Stretch)
-        layout.addWidget(self.tree)
-
-        self.refresh_tree()
-
-        entry_layout = QHBoxLayout()
-        entry_layout.addWidget(QLabel("Item ID:"))
-        self.item_entry = QLineEdit()
-        entry_layout.addWidget(self.item_entry)
-
-        entry_layout.addWidget(QLabel("Cap:"))
-        self.cap_spin = QDoubleSpinBox()
-        self.cap_spin.setRange(0, 1000000)
-        self.cap_spin.setValue(10)
-        entry_layout.addWidget(self.cap_spin)
-
-        set_btn = QPushButton("Set Cap")
-        set_btn.clicked.connect(self.add_cap)
-        entry_layout.addWidget(set_btn)
-
-        layout.addLayout(entry_layout)
-
-        btn_layout = QHBoxLayout()
-        remove_btn = QPushButton("Remove Selected Cap")
-        remove_btn.clicked.connect(self.remove_cap)
-        btn_layout.addWidget(remove_btn)
-
-        btn_layout.addStretch()
-
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        btn_layout.addWidget(close_btn)
-
-        layout.addLayout(btn_layout)
-
-    def refresh_tree(self):
-        self.tree.clear()
-        for k, v in self.resolver.item_caps.items():
-            item = QTreeWidgetItem([k, str(v)])
-            self.tree.addTopLevelItem(item)
-
-    def add_cap(self):
-        item_id = self.resolver.normalize_id(self.item_entry.text().strip())
-        cap = self.cap_spin.value()
-        if item_id:
-            self.resolver.item_caps[item_id] = cap
-            self.refresh_tree()
-            self.item_entry.clear()
-
-    def remove_cap(self):
-        selected = self.tree.selectedItems()
-        if selected:
-            item_id = selected[0].text(0)
-            if item_id in self.resolver.item_caps:
-                del self.resolver.item_caps[item_id]
-                self.refresh_tree()
-
-
-# ==================== REPO MANAGER DIALOG ====================
-class RepoManagerDialog(QDialog):
-    def __init__(self, parent, repos_list):
-        super().__init__(parent)
-        self.setWindowTitle("Manage Repositories")
-        self.resize(600, 400)
-        self.repos = list(repos_list)
-        self.result_repos = None
-
-        layout = QVBoxLayout(self)
-
-        layout.addWidget(QLabel("Active Mod Repository Sources:"))
-
-        self.repo_listwidget = QListWidget()
-        layout.addWidget(self.repo_listwidget)
-
-        self.refresh_list()
-
-        btn_layout = QHBoxLayout()
-        add_btn = QPushButton("Add Repo Directory...")
-        add_btn.clicked.connect(self.add_repo)
-        btn_layout.addWidget(add_btn)
-
-        remove_btn = QPushButton("Remove Selected")
-        remove_btn.clicked.connect(self.remove_repo)
-        btn_layout.addWidget(remove_btn)
-
-        btn_layout.addStretch()
-
-        save_btn = QPushButton("Save & Scan")
-        save_btn.clicked.connect(self.save_and_close)
-        btn_layout.addWidget(save_btn)
-
-        layout.addLayout(btn_layout)
-
-    def refresh_list(self):
-        self.repo_listwidget.clear()
-        for r in self.repos:
-            self.repo_listwidget.addItem(r)
-
-    def add_repo(self):
-        path = QFileDialog.getExistingDirectory(self, "Select Mod Repository Folder")
-        if path and path not in self.repos:
-            self.repos.append(path)
-            self.refresh_list()
-
-    def remove_repo(self):
-        selected = self.repo_listwidget.currentRow()
-        if selected >= 0:
-            del self.repos[selected]
-            self.refresh_list()
-
-    def save_and_close(self):
-        self.result_repos = self.repos
-        self.accept()
-
-
 # ==================== MAIN APPLICATION GUI ====================
 class ModMaterialCalculatorGUI(QMainWindow):
     def __init__(self):
@@ -943,8 +579,11 @@ class ModMaterialCalculatorGUI(QMainWindow):
         self.cart = {}
         self.signals = WorkerSignals()
 
+        self._cached_raw_totals = {}
+        self._cached_method_totals = {}
+
         self.signals.rescan_done.connect(self._on_rescan_complete)
-        self.signals.calc_done.connect(self._update_report_ui)
+        self.signals.calc_done.connect(self._on_calculation_finished)
 
         self.load_user_data()
         self.setup_ui()
@@ -996,7 +635,7 @@ class ModMaterialCalculatorGUI(QMainWindow):
         self.setCentralWidget(central_widget)
         root_layout = QVBoxLayout(central_widget)
 
-        # System Management Top Box
+        # Top System Controls Box
         top_group = QGroupBox(" System Management ")
         top_layout = QHBoxLayout(top_group)
 
@@ -1011,26 +650,10 @@ class ModMaterialCalculatorGUI(QMainWindow):
         btn_rescan.clicked.connect(self.rescan_all_repos)
         top_layout.addWidget(btn_rescan)
 
-        btn_links = QPushButton("Custom Namespace Links...")
-        btn_links.clicked.connect(self.open_namespace_manager)
-        top_layout.addWidget(btn_links)
-
-        btn_prefs = QPushButton("Recipe Preferences...")
-        btn_prefs.clicked.connect(self.open_recipe_preference_manager)
-        top_layout.addWidget(btn_prefs)
-
-        btn_overrides = QPushButton("Material Overrides...")
-        btn_overrides.clicked.connect(self.open_material_replacements_manager)
-        top_layout.addWidget(btn_overrides)
-
-        btn_caps = QPushButton("Set Item Max Caps...")
-        btn_caps.clicked.connect(self.open_item_cap_manager)
-        top_layout.addWidget(btn_caps)
-
         top_layout.addStretch()
         root_layout.addWidget(top_group)
 
-        # Main Horizontal Splitter
+        # Main Splitter
         main_splitter = QSplitter(Qt.Horizontal)
         root_layout.addWidget(main_splitter, stretch=1)
 
@@ -1039,14 +662,13 @@ class ModMaterialCalculatorGUI(QMainWindow):
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
-        left_layout.addWidget(QLabel("Search Patterns / Products (Double-Click for Recipe):"))
+        left_layout.addWidget(QLabel("Search Patterns / Products:"))
 
         self.search_entry = QLineEdit()
         self.search_entry.textChanged.connect(self.filter_items)
         left_layout.addWidget(self.search_entry)
 
         self.item_listwidget = QListWidget()
-        self.item_listwidget.itemDoubleClicked.connect(self.open_recipe_viewer_listbox)
         left_layout.addWidget(self.item_listwidget)
 
         add_layout = QHBoxLayout()
@@ -1070,14 +692,13 @@ class ModMaterialCalculatorGUI(QMainWindow):
         right_layout.setContentsMargins(0, 0, 0, 0)
 
         # Cart Box
-        cart_group = QGroupBox(" Selected Items Cart (Double-Click for Recipe) ")
+        cart_group = QGroupBox(" Selected Items Cart ")
         cart_layout = QVBoxLayout(cart_group)
 
         self.cart_tree = QTreeWidget()
         self.cart_tree.setHeaderLabels(["Item ID", "Quantity Needed"])
         self.cart_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.cart_tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.cart_tree.itemDoubleClicked.connect(self.open_recipe_viewer_cart)
         cart_layout.addWidget(self.cart_tree)
 
         cart_btn_layout = QHBoxLayout()
@@ -1094,7 +715,6 @@ class ModMaterialCalculatorGUI(QMainWindow):
 
         right_layout.addWidget(cart_group)
 
-        # Status Label
         self.status_label = QLabel("Ready.")
         status_font = QFont("Helvetica", 9, QFont.Normal)
         status_font.setItalic(True)
@@ -1107,12 +727,27 @@ class ModMaterialCalculatorGUI(QMainWindow):
 
         report_splitter = QSplitter(Qt.Vertical)
 
-        # Top Splitter Item: Raw Materials Tree
+        # Raw Materials Section with Sort Controls
         raw_widget = QWidget()
         raw_layout = QVBoxLayout(raw_widget)
         raw_layout.setContentsMargins(0, 0, 0, 0)
 
-        raw_layout.addWidget(QLabel("Raw Materials Required (Double-Click to Replace/Override):"))
+        raw_header_layout = QHBoxLayout()
+        raw_header_layout.addWidget(QLabel("Raw Materials Required (Double-Click to Replace/Override):"))
+        raw_header_layout.addStretch()
+
+        raw_header_layout.addWidget(QLabel("Sort Materials By:"))
+        self.raw_sort_combo = QComboBox()
+        self.raw_sort_combo.addItems([
+            "Highest Quantity First",
+            "Lowest Quantity First",
+            "Alphabetical (A-Z)",
+            "Tags First (Grouped)"
+        ])
+        self.raw_sort_combo.currentIndexChanged.connect(self.refresh_raw_materials_display)
+        raw_header_layout.addWidget(self.raw_sort_combo)
+
+        raw_layout.addLayout(raw_header_layout)
 
         self.report_tree = QTreeWidget()
         self.report_tree.setHeaderLabels(["Raw Material / Tag", "Quantity Needed"])
@@ -1123,12 +758,27 @@ class ModMaterialCalculatorGUI(QMainWindow):
 
         report_splitter.addWidget(raw_widget)
 
-        # Bottom Splitter Item: Crafting Breakdown Text
+        # Crafting Breakdown Section with Sort Controls
         text_widget = QWidget()
         text_layout = QVBoxLayout(text_widget)
         text_layout.setContentsMargins(0, 0, 0, 0)
 
-        text_layout.addWidget(QLabel("Processing / Crafting Methods Breakdown:"))
+        sort_header_layout = QHBoxLayout()
+        sort_header_layout.addWidget(QLabel("Processing / Crafting Methods Breakdown:"))
+        sort_header_layout.addStretch()
+
+        sort_header_layout.addWidget(QLabel("Sort Steps By:"))
+        self.craft_sort_combo = QComboBox()
+        self.craft_sort_combo.addItems([
+            "Prerequisites First (Dependency Order)",
+            "Highest Quantity First",
+            "Lowest Quantity First",
+            "Alphabetical (A-Z)"
+        ])
+        self.craft_sort_combo.currentIndexChanged.connect(self.refresh_breakdown_display)
+        sort_header_layout.addWidget(self.craft_sort_combo)
+
+        text_layout.addLayout(sort_header_layout)
 
         self.report_text = QTextEdit()
         self.report_text.setReadOnly(True)
@@ -1148,53 +798,15 @@ class ModMaterialCalculatorGUI(QMainWindow):
         self.refresh_cart_ui()
         self.trigger_async_calculation()
 
-    def on_recipe_preference_changed(self):
-        self.save_user_data()
-        self.trigger_async_calculation()
-
-    def open_recipe_viewer_listbox(self, item):
-        item_id = item.text()
-        if item_id and not item_id.startswith("["):
-            RecipeViewerDialog(self, self.resolver, item_id, callback=self.on_recipe_preference_changed).exec()
-
-    def open_recipe_viewer_cart(self, item, column):
-        item_id = item.text(0)
-        if item_id:
-            RecipeViewerDialog(self, self.resolver, item_id, callback=self.on_recipe_preference_changed).exec()
-
     def open_replacement_dialog(self, item, column):
         display_name = item.text(0)
         item_id = display_name.replace("[Tag] ", "")
         MaterialReplacementDialog(self, self.resolver, item_id, self.trigger_async_calculation).exec()
 
-    def open_recipe_preference_manager(self):
-        dlg = RecipePreferenceManagerDialog(self, self.resolver, callback=self.on_recipe_preference_changed)
-        if dlg.exec():
-            self.save_user_data()
-            self.trigger_async_calculation()
-
-    def open_material_replacements_manager(self):
-        dlg = MaterialReplacementManagerDialog(self, self.resolver)
-        if dlg.exec():
-            self.save_user_data()
-            self.trigger_async_calculation()
-
-    def open_namespace_manager(self):
-        dlg = NamespaceMappingDialog(self, self.resolver)
-        if dlg.exec():
-            self.save_user_data()
-            self.trigger_async_calculation()
-
-    def open_item_cap_manager(self):
-        dlg = ItemCapDialog(self, self.resolver)
-        if dlg.exec():
-            self.save_user_data()
-            self.trigger_async_calculation()
-
     def open_repo_manager(self):
-        dlg = RepoManagerDialog(self, self.active_repos)
-        if dlg.exec() and dlg.result_repos is not None:
-            self.active_repos = dlg.result_repos
+        path = QFileDialog.getExistingDirectory(self, "Select Mod Repository Folder")
+        if path and path not in self.active_repos:
+            self.active_repos.append(path)
             self.repo_label.setText(f"Active Repositories: {len(self.active_repos)}")
             self.rescan_all_repos()
             self.save_user_data()
@@ -1266,6 +878,8 @@ class ModMaterialCalculatorGUI(QMainWindow):
         if not self.cart:
             self.report_tree.clear()
             self.report_text.clear()
+            self._cached_raw_totals.clear()
+            self._cached_method_totals.clear()
             if not self.active_repos:
                 self.report_text.setText("[ Welcome! Click 'Manage Repos...' at the top to add your Minecraft mod JSON repository folders. ]")
             else:
@@ -1279,7 +893,7 @@ class ModMaterialCalculatorGUI(QMainWindow):
     def _async_calculate_worker(self):
         grand_raw_totals = defaultdict(float)
         grand_method_totals = defaultdict(lambda: defaultdict(lambda: {
-            "amount": 0.0,
+            "amount": 0,
             "inputs": defaultdict(float)
         }))
 
@@ -1306,37 +920,116 @@ class ModMaterialCalculatorGUI(QMainWindow):
 
         self.signals.calc_done.emit(dict(grand_raw_totals), sanitized_methods)
 
-    def _update_report_ui(self, grand_raw_totals, grand_method_totals):
+    def _on_calculation_finished(self, grand_raw_totals, grand_method_totals):
+        self._cached_raw_totals = grand_raw_totals
+        self._cached_method_totals = grand_method_totals
+        
+        # Populate raw material tree and crafting text
+        self.refresh_raw_materials_display()
+        self.refresh_breakdown_display()
+        self.status_label.setText("Calculation up to date.")
+
+    def refresh_raw_materials_display(self):
+        """Re-sorts and populates the raw materials tree with integer quantities."""
+        if not self._cached_raw_totals:
+            return
+
         self.report_tree.clear()
+        sort_mode = self.raw_sort_combo.currentText()
 
-        sorted_raw = sorted(grand_raw_totals.items(), key=lambda x: x[1], reverse=True)
+        raw_list = list(self._cached_raw_totals.items())
 
-        for mat, amt in sorted_raw:
-            stacks = amt / 64
-            stack_str = f" ({int(stacks)} stacks + {round(amt % 64, 1)})" if stacks >= 1 else ""
-            
-            is_tag = mat.startswith("#")
-            prefix = "[Tag] " if is_tag else ""
-            
+        if "Highest Quantity" in sort_mode:
+            raw_list.sort(key=lambda x: x[1], reverse=True)
+        elif "Lowest Quantity" in sort_mode:
+            raw_list.sort(key=lambda x: x[1])
+        elif "Alphabetical" in sort_mode:
+            raw_list.sort(key=lambda x: x[0])
+        elif "Tags First" in sort_mode:
+            raw_list.sort(key=lambda x: (not x[0].startswith("#"), -x[1]))
+
+        for mat, amt in raw_list:
+            amt_int = int(math.ceil(amt))
+            stacks = amt_int // 64
+            rem_items = amt_int % 64
+
+            if stacks >= 1:
+                stack_str = f" ({stacks} stacks + {rem_items})" if rem_items > 0 else f" ({stacks} stacks)"
+            else:
+                stack_str = ""
+
+            prefix = "[Tag] " if mat.startswith("#") else ""
             display_name = f"{prefix}{mat}"
-            display_qty = f"{round(amt, 2)}{stack_str}"
-            
-            tree_item = QTreeWidgetItem([display_name, display_qty])
-            self.report_tree.addTopLevelItem(tree_item)
+            display_qty = f"{amt_int}{stack_str}"
+            self.report_tree.addTopLevelItem(QTreeWidgetItem([display_name, display_qty]))
+
+    def _calculate_dependency_depths(self, grand_method_totals):
+        """Calculates crafting tree depth (0 = prerequisite craft, higher = depends on prior crafts)."""
+        craft_items = set()
+        item_inputs = defaultdict(set)
+
+        for method, items_dict in grand_method_totals.items():
+            for item_id, data in items_dict.items():
+                craft_items.add(item_id)
+                if isinstance(data, dict):
+                    for inp_id in data.get("inputs", {}).keys():
+                        item_inputs[item_id].add(inp_id)
+
+        depths = {}
+
+        def get_depth(item_id, visited=None):
+            if visited is None:
+                visited = set()
+            if item_id in depths:
+                return depths[item_id]
+            if item_id in visited:
+                return 0
+            visited.add(item_id)
+
+            max_input_depth = -1
+            for inp_id in item_inputs[item_id]:
+                if inp_id in craft_items:
+                    max_input_depth = max(max_input_depth, get_depth(inp_id, visited.copy()))
+
+            depths[item_id] = max_input_depth + 1
+            return depths[item_id]
+
+        for item_id in craft_items:
+            get_depth(item_id)
+
+        return depths
+
+    def refresh_breakdown_display(self):
+        """Re-sorts and renders crafting steps with whole-number amounts."""
+        if not self._cached_method_totals:
+            return
+
+        sort_mode = self.craft_sort_combo.currentText()
+        depths = self._calculate_dependency_depths(self._cached_method_totals)
 
         lines = []
-        for method, items_dict in grand_method_totals.items():
+        for method, items_dict in self._cached_method_totals.items():
             lines.append(f"=== [ Method: {method} ] ===")
-            sorted_method_items = sorted(
-                items_dict.items(), 
-                key=lambda x: x[1]["amount"] if isinstance(x[1], dict) else x[1], 
-                reverse=True
-            )
-            for item_id, data in sorted_method_items:
+
+            items_list = list(items_dict.items())
+
+            if "Prerequisites First" in sort_mode:
+                items_list.sort(key=lambda x: (
+                    depths.get(x[0], 0),
+                    -(x[1]["amount"] if isinstance(x[1], dict) else x[1])
+                ))
+            elif "Highest Quantity" in sort_mode:
+                items_list.sort(key=lambda x: x[1]["amount"] if isinstance(x[1], dict) else x[1], reverse=True)
+            elif "Lowest Quantity" in sort_mode:
+                items_list.sort(key=lambda x: x[1]["amount"] if isinstance(x[1], dict) else x[1])
+            elif "Alphabetical" in sort_mode:
+                items_list.sort(key=lambda x: x[0])
+
+            for item_id, data in items_list:
                 if isinstance(data, dict):
-                    amt = round(data["amount"], 2)
+                    amt = int(math.ceil(data["amount"]))
                     inputs = data.get("inputs", {})
-                    p_str = ", ".join([f"{round(q, 2)}x {ing}" for ing, q in inputs.items()])
+                    p_str = ", ".join([f"{int(math.ceil(q))}x {ing}" for ing, q in inputs.items()])
                     
                     action = "Craft"
                     m_lower = method.lower()
@@ -1345,16 +1038,17 @@ class ModMaterialCalculatorGUI(QMainWindow):
                     elif "crushing" in m_lower or "pulverizing" in m_lower or "grinding" in m_lower:
                         action = "Crush"
 
+                    depth_tag = f" [Step Lvl {depths.get(item_id, 0)}]" if "Prerequisites First" in sort_mode else ""
+
                     if p_str:
-                        lines.append(f"   - {action} {amt}x {item_id} (using {p_str})")
+                        lines.append(f"   - {action} {amt}x {item_id}{depth_tag} (using {p_str})")
                     else:
-                        lines.append(f"   - {action} {amt}x {item_id}")
+                        lines.append(f"   - {action} {amt}x {item_id}{depth_tag}")
                 else:
-                    lines.append(f"   - Process {round(data, 2)}x {item_id}")
+                    lines.append(f"   - Process {int(math.ceil(data))}x {item_id}")
             lines.append("")
 
         self.report_text.setText("\n".join(lines))
-        self.status_label.setText("Calculation up to date.")
 
 
 if __name__ == "__main__":
