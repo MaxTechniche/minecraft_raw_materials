@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox,
     QCheckBox, QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem,
     QTextEdit, QTextBrowser, QGroupBox, QSplitter, QScrollArea, QDialog,
-    QFileDialog, QHeaderView, QMenu, QTabWidget
+    QFileDialog, QHeaderView, QMenu, QTabWidget, QInputDialog
 )
 from PySide6.QtCore import Qt, Signal, QObject, QTimer, QUrl
 from PySide6.QtGui import QFont, QAction, QDesktopServices
@@ -62,6 +62,7 @@ class AdvancedRecipeResolver:
         self._lock = threading.Lock()
         self.recipes: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         self.raw_overrides: Set[str] = set()
+        self.completed_steps: Set[str] = set()
         self.item_caps: Dict[str, float] = {}  
         self.material_replacements: Dict[str, str] = {}  
         self.preferred_recipes: Dict[str, int] = {}  
@@ -70,6 +71,17 @@ class AdvancedRecipeResolver:
         self.advancement_triggers: Dict[str, Set[str]] = defaultdict(set)  # Recipe unlock triggers
         self.all_known_items: Set[str] = set()  
         self.namespace_mappings: Dict[str, str] = {}
+
+    def toggle_completed_step(self, item_id: str) -> bool:
+        """Toggles marking a crafting step as complete."""
+        norm_id = self.normalize_id(item_id)
+        with self._lock:
+            if norm_id in self.completed_steps:
+                self.completed_steps.remove(norm_id)
+                return False
+            else:
+                self.completed_steps.add(norm_id)
+                return True
 
     def toggle_raw_override(self, item_id: str) -> bool:
         """Toggles treating an item as a base raw material (overriding its crafting step)."""
@@ -569,13 +581,19 @@ class AdvancedRecipeResolver:
             remaining_allowance = max(0.0, cap - already_used)
             eff_target_amount = min(eff_target_amount, remaining_allowance)
 
+        # OPTION 1: STEP MARKED COMPLETE
+        if item_id in self.completed_steps:
+            return dict(raw_totals), method_steps
+
         eff_target_amount = int(math.ceil(eff_target_amount))
 
         if eff_target_amount <= 0:
             return dict(raw_totals), method_steps
 
+        # OPTION 2: CONSIDER AS RAW MATERIAL / NO RECIPE / TAG / VISITED
         if item_id in self.raw_overrides or item_id.startswith("#") or item_id not in self.recipes or item_id in visited:
             raw_totals[item_id] += eff_target_amount
+            item_usage_tracker[item_id] += eff_target_amount
             return dict(raw_totals), method_steps
 
         candidate_recipes = self.recipes[item_id]
@@ -607,6 +625,7 @@ class AdvancedRecipeResolver:
 
         if not chosen_recipe:
             raw_totals[item_id] += eff_target_amount
+            item_usage_tracker[item_id] += eff_target_amount
             return dict(raw_totals), method_steps
 
         visited.add(item_id)
@@ -623,7 +642,7 @@ class AdvancedRecipeResolver:
         for input_id, req_qty in recipe["inputs"].items():
             norm_input_id = self.normalize_id(input_id)
             raw_req = req_qty * crafts_needed
-            
+
             inp_cap = self.item_caps.get(norm_input_id, None)
             if inp_cap is None and norm_input_id in self.recipes:
                 for r in self.recipes[norm_input_id]:
@@ -659,7 +678,7 @@ class AdvancedRecipeResolver:
 # ==================== QT THREAD SIGNALS ====================
 class WorkerSignals(QObject):
     rescan_done = Signal()
-    calc_done = Signal(dict, dict)
+    calc_done = Signal(dict, dict, dict, dict)
 
 
 # ==================== ENHANCED TAG INSPECTOR DIALOG ====================
@@ -829,12 +848,35 @@ class ItemInspectorDialog(QDialog):
         self.setup_raw_tab()
         self.tabs.addTab(self.raw_tab, "Item Raw Materials")
 
+        cap_box = QWidget()
+        cap_layout = QHBoxLayout(cap_box)
+        cap_layout.setContentsMargins(0, 0, 0, 0)
+        cap_layout.addWidget(QLabel("⚡ <b>Max Craft Cap Limit:</b>"))
+        self.cap_spin = QSpinBox()
+        self.cap_spin.setRange(0, 1000000)
+        self.cap_spin.setSpecialValueText("Unlimited (No Cap)")
+        current_cap = self.resolver.item_caps.get(self.item_id, None)
+        if current_cap is not None:
+            self.cap_spin.setValue(int(current_cap))
+        else:
+            self.cap_spin.setValue(0)
+        self.cap_spin.valueChanged.connect(self.on_cap_spin_changed)
+        cap_layout.addWidget(self.cap_spin)
+        cap_layout.addStretch()
+        layout.addWidget(cap_box)
+
         btn_layout = QHBoxLayout()
 
-        self.override_btn = QPushButton()
-        self.update_override_btn_state()
-        self.override_btn.clicked.connect(self.toggle_override)
-        btn_layout.addWidget(self.override_btn)
+        self.complete_btn = QPushButton()
+        self.raw_override_btn = QPushButton()
+        
+        self.update_action_btn_states()
+        
+        self.complete_btn.clicked.connect(self.toggle_complete)
+        self.raw_override_btn.clicked.connect(self.toggle_raw_override)
+        
+        btn_layout.addWidget(self.complete_btn)
+        btn_layout.addWidget(self.raw_override_btn)
 
         clear_pref_btn = QPushButton("Clear Recipe Preference")
         clear_pref_btn.clicked.connect(self.clear_preference)
@@ -852,17 +894,45 @@ class ItemInspectorDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
-    def update_override_btn_state(self) -> None:
-        if self.item_id in self.resolver.raw_overrides:
-            self.override_btn.setText("🛠️ Restore Crafting (Remove Override)")
-            self.override_btn.setStyleSheet("background-color: #27ae60; color: white;")
+    def update_action_btn_states(self) -> None:
+        if self.item_id in self.resolver.completed_steps:
+            self.complete_btn.setText("↩️ Undo Mark Complete")
+            self.complete_btn.setStyleSheet("background-color: #f39c12; color: white;")
         else:
-            self.override_btn.setText("🛑 Override Step (Treat as Raw Material)")
-            self.override_btn.setStyleSheet("background-color: #c0392b; color: white;")
+            self.complete_btn.setText("✅ Mark Step Complete")
+            self.complete_btn.setStyleSheet("background-color: #27ae60; color: white;")
 
-    def toggle_override(self) -> None:
+        if self.item_id in self.resolver.raw_overrides:
+            self.raw_override_btn.setText("🛠️ Restore Crafting Recipe")
+            self.raw_override_btn.setStyleSheet("background-color: #2980b9; color: white;")
+        else:
+            self.raw_override_btn.setText("🧱 Consider as Raw Material")
+            self.raw_override_btn.setStyleSheet("background-color: #e67e22; color: white;")
+
+    def toggle_complete(self) -> None:
+        self.resolver.toggle_completed_step(self.item_id)
+        self.update_action_btn_states()
+        self.populate_recipes()
+        self.populate_series_tree()
+        self.populate_raw_tab()
+        if self.callback:
+            self.callback()
+
+    def toggle_raw_override(self) -> None:
         self.resolver.toggle_raw_override(self.item_id)
-        self.update_override_btn_state()
+        self.update_action_btn_states()
+        self.populate_recipes()
+        self.populate_series_tree()
+        self.populate_raw_tab()
+        if self.callback:
+            self.callback()
+
+    def on_cap_spin_changed(self, val: int) -> None:
+        if val > 0:
+            self.resolver.item_caps[self.item_id] = float(val)
+        else:
+            if self.item_id in self.resolver.item_caps:
+                del self.resolver.item_caps[self.item_id]
         self.populate_recipes()
         self.populate_series_tree()
         self.populate_raw_tab()
@@ -1015,6 +1085,63 @@ class ItemInspectorDialog(QDialog):
 
 
 # ==================== MANAGERIAL DIALOGS ====================
+class CompletedStepsManagerDialog(QDialog):
+    def __init__(self, parent: QWidget, resolver: AdvancedRecipeResolver, callback: Optional[Any] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Manage Completed Steps")
+        self.resize(520, 380)
+        self.resolver = resolver
+        self.callback = callback
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Crafting Steps Currently Marked as Complete:"))
+
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Item / Step ID"])
+        self.tree.header().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.tree)
+
+        self.refresh_tree()
+
+        btn_layout = QHBoxLayout()
+        restore_btn = QPushButton("Restore Step (Mark Incomplete)")
+        restore_btn.clicked.connect(self.restore_step)
+        btn_layout.addWidget(restore_btn)
+
+        clear_all_btn = QPushButton("Clear All Completed Steps")
+        clear_all_btn.clicked.connect(self.clear_all)
+        btn_layout.addWidget(clear_all_btn)
+
+        btn_layout.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(close_btn)
+
+        layout.addLayout(btn_layout)
+
+    def refresh_tree(self) -> None:
+        self.tree.clear()
+        for item_id in sorted(list(self.resolver.completed_steps)):
+            self.tree.addTopLevelItem(QTreeWidgetItem([item_id]))
+
+    def restore_step(self) -> None:
+        selected = self.tree.selectedItems()
+        if selected:
+            item_id = selected[0].text(0)
+            if item_id in self.resolver.completed_steps:
+                self.resolver.completed_steps.remove(item_id)
+                self.refresh_tree()
+                if self.callback:
+                    self.callback()
+
+    def clear_all(self) -> None:
+        if self.resolver.completed_steps:
+            self.resolver.completed_steps.clear()
+            self.refresh_tree()
+            if self.callback:
+                self.callback()
+
+
 class RecipePreferenceManagerDialog(QDialog):
     def __init__(self, parent: QWidget, resolver: AdvancedRecipeResolver, callback: Optional[Any] = None) -> None:
         super().__init__(parent)
@@ -1138,6 +1265,7 @@ class MaterialReplacementDialog(QDialog):
 
     def filter_items(self) -> None:
         query = self.search_entry.text().lower().strip()
+        v_val = self.item_listwidget.verticalScrollBar().value()
         self.item_listwidget.clear()
         for item in sorted(list(self.resolver.all_known_items)):
             if not query or query in item.lower():
@@ -1309,11 +1437,11 @@ class ItemCapDialog(QDialog):
     def __init__(self, parent: QWidget, resolver: AdvancedRecipeResolver) -> None:
         super().__init__(parent)
         self.setWindowTitle("Item Max Crafting Caps")
-        self.resize(520, 400)
+        self.resize(600, 480)
         self.resolver = resolver
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Set Maximum Craftable Limits per Item:"))
+        layout.addWidget(QLabel("<b>Active Item Max Craft Limits:</b>"))
 
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Item ID", "Max Craft Limit"])
@@ -1322,13 +1450,30 @@ class ItemCapDialog(QDialog):
 
         self.refresh_tree()
 
+        # Item Selector & Cap Editor
+        layout.addWidget(QLabel("<b>Add / Edit Cap for Known Item:</b>"))
+        
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("Search Items:"))
+        self.search_entry = QLineEdit()
+        self.search_entry.setPlaceholderText("Filter known items...")
+        self.search_entry.textChanged.connect(self.filter_items)
+        search_layout.addWidget(self.search_entry)
+        layout.addLayout(search_layout)
+
+        self.item_listwidget = QListWidget()
+        self.item_listwidget.itemSelectionChanged.connect(self.on_select_item)
+        layout.addWidget(self.item_listwidget)
+
+        self.filter_items()
+
         entry_layout = QHBoxLayout()
-        entry_layout.addWidget(QLabel("Item ID:"))
+        entry_layout.addWidget(QLabel("Selected Item:"))
         self.item_entry = QLineEdit()
-        entry_layout.addWidget(self.item_entry)
+        entry_layout.addWidget(self.item_entry, stretch=1)
 
         entry_layout.addWidget(QLabel("Cap:"))
-        self.cap_spin = QDoubleSpinBox()
+        self.cap_spin = QSpinBox()
         self.cap_spin.setRange(0, 1000000)
         self.cap_spin.setValue(10)
         entry_layout.addWidget(self.cap_spin)
@@ -1344,6 +1489,10 @@ class ItemCapDialog(QDialog):
         remove_btn.clicked.connect(self.remove_cap)
         btn_layout.addWidget(remove_btn)
 
+        clear_all_btn = QPushButton("Clear All Caps")
+        clear_all_btn.clicked.connect(self.clear_all_caps)
+        btn_layout.addWidget(clear_all_btn)
+
         btn_layout.addStretch()
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
@@ -1351,16 +1500,35 @@ class ItemCapDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
+    def filter_items(self) -> None:
+        query = self.search_entry.text().lower().strip()
+        self.item_listwidget.clear()
+        for item in sorted(list(self.resolver.all_known_items)):
+            if not query or query in item.lower():
+                self.item_listwidget.addItem(item)
+
+    def on_select_item(self) -> None:
+        items = self.item_listwidget.selectedItems()
+        if items:
+            item_id = items[0].text()
+            self.item_entry.setText(item_id)
+            current_cap = self.resolver.item_caps.get(item_id, 10)
+            self.cap_spin.setValue(int(current_cap))
+
     def refresh_tree(self) -> None:
         self.tree.clear()
-        for k, v in self.resolver.item_caps.items():
-            self.tree.addTopLevelItem(QTreeWidgetItem([k, str(v)]))
+        for k, v in sorted(self.resolver.item_caps.items()):
+            self.tree.addTopLevelItem(QTreeWidgetItem([k, str(int(v))]))
 
     def add_cap(self) -> None:
         item_id = self.resolver.normalize_id(self.item_entry.text().strip())
         cap = self.cap_spin.value()
         if item_id:
-            self.resolver.item_caps[item_id] = cap
+            if cap > 0:
+                self.resolver.item_caps[item_id] = float(cap)
+            else:
+                if item_id in self.resolver.item_caps:
+                    del self.resolver.item_caps[item_id]
             self.refresh_tree()
             self.item_entry.clear()
 
@@ -1371,6 +1539,11 @@ class ItemCapDialog(QDialog):
             if item_id in self.resolver.item_caps:
                 del self.resolver.item_caps[item_id]
                 self.refresh_tree()
+
+    def clear_all_caps(self) -> None:
+        if self.resolver.item_caps:
+            self.resolver.item_caps.clear()
+            self.refresh_tree()
 
 
 class RepoManagerDialog(QDialog):
@@ -1441,14 +1614,22 @@ class ModMaterialCalculatorGUI(QMainWindow):
         self.cart: Dict[str, int] = {}
         self.signals = WorkerSignals()
 
-        self._cached_raw_totals: Dict[str, float] = {}
-        self._cached_method_totals: Dict[str, Dict[str, Any]] = {}
+        self._cached_base_raw_totals: Dict[str, float] = {}
+        self._cached_base_method_totals: Dict[str, Dict[str, Any]] = {}
+        self._cached_rem_raw_totals: Dict[str, float] = {}
+        self._cached_rem_method_totals: Dict[str, Dict[str, Any]] = {}
 
         # Search Debouncing Timer (250ms)
         self.search_timer = QTimer()
         self.search_timer.setSingleShot(True)
         self.search_timer.setInterval(250)
         self.search_timer.timeout.connect(self.filter_items)
+
+        # Calculation Debouncing Timer (1 second delay)
+        self.recalc_timer = QTimer()
+        self.recalc_timer.setSingleShot(True)
+        self.recalc_timer.setInterval(1000)
+        self.recalc_timer.timeout.connect(self._on_recalc_timer_timeout)
 
         self.signals.rescan_done.connect(self._on_rescan_complete)
         self.signals.calc_done.connect(self._on_calculation_finished)
@@ -1475,6 +1656,7 @@ class ModMaterialCalculatorGUI(QMainWindow):
                     self.resolver.item_caps = data.get("item_caps", {})
                     self.resolver.material_replacements = data.get("material_replacements", {})
                     self.resolver.owned_inventory = defaultdict(int, data.get("owned_inventory", {}))
+                    self.resolver.completed_steps = set(data.get("completed_steps", []))
                     self.resolver.raw_overrides = set(data.get("raw_overrides", [
                         "minecraft:iron_ingot", "minecraft:gold_ingot", "minecraft:redstone",
                         "minecraft:copper_ingot", "minecraft:quartz", "minecraft:stick",
@@ -1492,6 +1674,7 @@ class ModMaterialCalculatorGUI(QMainWindow):
             "item_caps": self.resolver.item_caps,
             "material_replacements": self.resolver.material_replacements,
             "owned_inventory": dict(self.resolver.owned_inventory),
+            "completed_steps": list(self.resolver.completed_steps),
             "raw_overrides": list(self.resolver.raw_overrides)
         }
         dir_name = os.path.dirname(self.db_file) or "."
@@ -1522,6 +1705,10 @@ class ModMaterialCalculatorGUI(QMainWindow):
         btn_rescan = QPushButton("Rescan Repositories")
         btn_rescan.clicked.connect(self.rescan_all_repos)
         top_layout.addWidget(btn_rescan)
+
+        btn_completed = QPushButton("Completed Steps...")
+        btn_completed.clicked.connect(self.open_completed_steps_manager)
+        top_layout.addWidget(btn_completed)
 
         btn_links = QPushButton("Custom Namespace Links...")
         btn_links.clicked.connect(self.open_namespace_manager)
@@ -1600,10 +1787,11 @@ class ModMaterialCalculatorGUI(QMainWindow):
         cart_layout = QVBoxLayout(cart_group)
 
         self.cart_tree = QTreeWidget()
-        self.cart_tree.setHeaderLabels(["Item ID", "Qty Needed", "In Stock / Owned"])
+        self.cart_tree.setHeaderLabels(["Item ID", "Total Required", "Total Remaining", "Total Owned"])
         self.cart_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.cart_tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.cart_tree.header().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.cart_tree.header().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.cart_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.cart_tree.customContextMenuRequested.connect(self.open_cart_context_menu)
         self.cart_tree.itemDoubleClicked.connect(self.open_recipe_viewer_cart)
@@ -1643,11 +1831,14 @@ class ModMaterialCalculatorGUI(QMainWindow):
         raw_header_layout.addWidget(btn_copy_raw)
 
         raw_header_layout.addWidget(QLabel("Sort Materials By:"))
-        self.raw_sort_combo = QComboBox()
 
+        # Raw Materials Sort Dropdown Setup
+        self.raw_sort_combo = QComboBox()
         self.raw_sort_combo.addItems([
-            "Highest Quantity First",
-            "Lowest Quantity First",
+            "Highest Total Required First",
+            "Highest Total Remaining First",
+            "Lowest Total Remaining First",
+            "Lowest Total Required First",
             "Alphabetical (A-Z)",
             "Namespace (A-Z)",
             "Tags First (Grouped)"
@@ -1659,13 +1850,14 @@ class ModMaterialCalculatorGUI(QMainWindow):
 
         # Sectioned Columns for Raw Materials (Including In Stock Column)
         self.report_tree = QTreeWidget()
-        self.report_tree.setHeaderLabels(["Category", "Namespace", "Item / Tag Name", "Remaining Needed", "In Stock / Owned", "Stacks / Remainder"])
+        self.report_tree.setHeaderLabels(["Category", "Namespace", "Item / Tag Name", "Total Required", "Total Remaining", "Total Owned", "Stacks / Remainder"])
         self.report_tree.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.report_tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.report_tree.header().setSectionResizeMode(2, QHeaderView.Stretch)
         self.report_tree.header().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.report_tree.header().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.report_tree.header().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        self.report_tree.header().setSectionResizeMode(6, QHeaderView.ResizeToContents)
         self.report_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.report_tree.customContextMenuRequested.connect(self.open_raw_tree_context_menu)
         self.report_tree.itemDoubleClicked.connect(self.open_replacement_dialog)
@@ -1745,19 +1937,25 @@ class ModMaterialCalculatorGUI(QMainWindow):
                 TagInspectorDialog(self, self.resolver, item_id, callback=self.on_recipe_preference_changed).exec()
             else:
                 ItemInspectorDialog(self, self.resolver, item_id, callback=self.on_recipe_preference_changed).exec()
-        elif raw_href.startswith("override:"):
+        elif raw_href.startswith("complete:"):
             item_id = raw_href[9:]
-            is_overridden = self.resolver.toggle_raw_override(item_id)
+            self.resolver.toggle_completed_step(item_id)
             self.save_user_data()
             self.trigger_async_calculation()
-            act_str = "Treating as Base Raw Material" if is_overridden else "Crafting Recipe Restored"
-            self.status_label.setText(f"Override updated for '{item_id}': {act_str}.")
+            self.status_label.setText(f"Marked step '{item_id}' as complete.")
+        elif raw_href.startswith("raw:"):
+            item_id = raw_href[4:]
+            is_raw = self.resolver.toggle_raw_override(item_id)
+            self.save_user_data()
+            self.trigger_async_calculation()
+            act_str = "Considered as Base Raw Material" if is_raw else "Crafting Recipe Restored"
+            self.status_label.setText(f"Updated '{item_id}': {act_str}.")
 
     def open_breakdown_context_menu(self, position: Any) -> None:
         anchor = self.report_text.anchorAt(position)
         if not anchor:
             return
-        if anchor.startswith("item:") or anchor.startswith("override:"):
+        if anchor.startswith("item:") or anchor.startswith("complete:") or anchor.startswith("raw:"):
             clean_id = anchor.split(":", 1)[1]
             menu = QMenu(self)
             
@@ -1765,11 +1963,21 @@ class ModMaterialCalculatorGUI(QMainWindow):
             act_inspect.triggered.connect(lambda: ItemInspectorDialog(self, self.resolver, clean_id, callback=self.on_recipe_preference_changed).exec())
             menu.addAction(act_inspect)
 
+            is_comp = clean_id in self.resolver.completed_steps
+            act_complete = QAction("↩️ Undo Mark Complete" if is_comp else "✅ Mark Step Complete", self)
+            act_complete.triggered.connect(lambda: self.toggle_completed_step_and_recalc(clean_id))
+            menu.addAction(act_complete)
+
             is_ov = clean_id in self.resolver.raw_overrides
-            ov_text = "🛠️ Restore Crafting Recipe" if is_ov else "🛑 Override Step (Treat as Base Raw Material)"
-            act_ov = QAction(ov_text, self)
+            act_ov = QAction("🛠️ Restore Crafting Recipe" if is_ov else "🧱 Consider as Raw Material", self)
             act_ov.triggered.connect(lambda: self.toggle_raw_override_and_recalc(clean_id))
             menu.addAction(act_ov)
+
+            cap_val = int(self.resolver.item_caps[clean_id]) if clean_id in self.resolver.item_caps else 0
+            cap_text = f"⚡ Set Max Craft Cap... (Cap: {cap_val})" if cap_val > 0 else "⚡ Set Max Craft Cap..."
+            act_cap = QAction(cap_text, self)
+            act_cap.triggered.connect(lambda _, i_id=clean_id: self.open_set_cap_dialog(i_id))
+            menu.addAction(act_cap)
 
             act_copy = QAction("Copy Item ID", self)
             act_copy.triggered.connect(lambda: QApplication.clipboard().setText(clean_id))
@@ -1777,10 +1985,41 @@ class ModMaterialCalculatorGUI(QMainWindow):
 
             menu.exec(self.report_text.viewport().mapToGlobal(position))
 
-    def toggle_raw_override_and_recalc(self, item_id: str) -> None:
-        self.resolver.toggle_raw_override(item_id)
+    def schedule_recalculation(self) -> None:
+        self.status_label.setText("Waiting 1s for updates to finish...")
+        self.recalc_timer.start()
+
+    def _on_recalc_timer_timeout(self) -> None:
         self.save_user_data()
         self.trigger_async_calculation()
+
+    def open_set_cap_dialog(self, item_id: str) -> None:
+        from PySide6.QtWidgets import QInputDialog
+        current_cap = int(self.resolver.item_caps.get(item_id, 0))
+        val, ok = QInputDialog.getInt(
+            self,
+            f"Set Max Craft Cap: {item_id}",
+            f"Set maximum craft limit for '{item_id}' (0 for unlimited):",
+            current_cap,
+            0,
+            1000000,
+            1
+        )
+        if ok:
+            if val > 0:
+                self.resolver.item_caps[item_id] = float(val)
+            else:
+                if item_id in self.resolver.item_caps:
+                    del self.resolver.item_caps[item_id]
+            self.schedule_recalculation()
+
+    def toggle_completed_step_and_recalc(self, item_id: str) -> None:
+        self.resolver.toggle_completed_step(item_id)
+        self.schedule_recalculation()
+
+    def toggle_raw_override_and_recalc(self, item_id: str) -> None:
+        self.resolver.toggle_raw_override(item_id)
+        self.schedule_recalculation()
 
     # ==================== MANAGERIAL DIALOG OPENERS ====================
     def on_inventory_changed(self) -> None:
@@ -1804,6 +2043,12 @@ class ModMaterialCalculatorGUI(QMainWindow):
         name = item.text(2)
         item_id = f"#{ns}:{name}" if cat == "Tag" else f"{ns}:{name}"
         MaterialReplacementDialog(self, self.resolver, item_id, self.trigger_async_calculation).exec()
+
+    def open_completed_steps_manager(self) -> None:
+        dlg = CompletedStepsManagerDialog(self, self.resolver, callback=self.on_recipe_preference_changed)
+        if dlg.exec():
+            self.save_user_data()
+            self.trigger_async_calculation()
 
     def open_recipe_preference_manager(self) -> None:
         dlg = RecipePreferenceManagerDialog(self, self.resolver, callback=self.on_recipe_preference_changed)
@@ -1838,8 +2083,7 @@ class ModMaterialCalculatorGUI(QMainWindow):
             self.save_user_data()
 
     def on_recipe_preference_changed(self) -> None:
-        self.save_user_data()
-        self.trigger_async_calculation()
+        self.schedule_recalculation()
 
     # ==================== CONTEXT MENUS & CLIPBOARD ====================
     def open_search_context_menu(self, position: Any) -> None:
@@ -1854,6 +2098,12 @@ class ModMaterialCalculatorGUI(QMainWindow):
         act_inspect = QAction(f"Inspect '{clean_id}'...", self)
         act_inspect.triggered.connect(lambda: ItemInspectorDialog(self, self.resolver, clean_id, callback=self.on_recipe_preference_changed).exec())
         menu.addAction(act_inspect)
+
+        cap_val = int(self.resolver.item_caps[clean_id]) if clean_id in self.resolver.item_caps else 0
+        cap_text = f"⚡ Set Max Craft Cap... (Cap: {cap_val})" if cap_val > 0 else "⚡ Set Max Craft Cap..."
+        act_cap = QAction(cap_text, self)
+        act_cap.triggered.connect(lambda _, i_id=clean_id: self.open_set_cap_dialog(i_id))
+        menu.addAction(act_cap)
 
         menu.exec(self.item_listwidget.viewport().mapToGlobal(position))
 
@@ -1870,13 +2120,19 @@ class ModMaterialCalculatorGUI(QMainWindow):
         menu.addAction(act_inspect)
 
         is_ov = clean_id in self.resolver.raw_overrides
-        ov_text = "🛠️ Restore Crafting Recipe (Remove Raw Override)" if is_ov else "🛑 Override Step (Treat as Base Raw Material)"
+        ov_text = "🛠️ Restore Crafting Recipe" if is_ov else "🧱 Consider as Raw Material"
         act_ov = QAction(ov_text, self)
         act_ov.triggered.connect(lambda: self.toggle_raw_override_and_recalc(clean_id))
         menu.addAction(act_ov)
 
+        cap_val = int(self.resolver.item_caps[clean_id]) if clean_id in self.resolver.item_caps else 0
+        cap_text = f"⚡ Set Max Craft Cap... (Cap: {cap_val})" if cap_val > 0 else "⚡ Set Max Craft Cap..."
+        act_cap = QAction(cap_text, self)
+        act_cap.triggered.connect(lambda _, i_id=clean_id: self.open_set_cap_dialog(i_id))
+        menu.addAction(act_cap)
+
         act_replace = QAction("Replace/Override Material...", self)
-        act_replace.triggered.connect(lambda: MaterialReplacementDialog(self, self.resolver, clean_id, self.trigger_async_calculation).exec())
+        act_replace.triggered.connect(lambda: MaterialReplacementDialog(self, self.resolver, clean_id, self.schedule_recalculation).exec())
         menu.addAction(act_replace)
 
         act_copy_id = QAction(f"Copy ID ('{clean_id}')", self)
@@ -1896,6 +2152,12 @@ class ModMaterialCalculatorGUI(QMainWindow):
         act_inspect.triggered.connect(lambda: ItemInspectorDialog(self, self.resolver, item_id, callback=self.on_recipe_preference_changed).exec())
         menu.addAction(act_inspect)
 
+        cap_val = int(self.resolver.item_caps[item_id]) if item_id in self.resolver.item_caps else 0
+        cap_text = f"⚡ Set Max Craft Cap... (Cap: {cap_val})" if cap_val > 0 else "⚡ Set Max Craft Cap..."
+        act_cap = QAction(cap_text, self)
+        act_cap.triggered.connect(lambda _, i_id=item_id: self.open_set_cap_dialog(i_id))
+        menu.addAction(act_cap)
+
         act_copy_id = QAction("Copy Item ID", self)
         act_copy_id.triggered.connect(lambda: QApplication.clipboard().setText(item_id))
         menu.addAction(act_copy_id)
@@ -1911,7 +2173,7 @@ class ModMaterialCalculatorGUI(QMainWindow):
         root = self.report_tree.invisibleRootItem()
         for i in range(root.childCount()):
             c = root.child(i)
-            lines.append(f"[{c.text(0)}] {c.text(1)}:{c.text(2)} -> Remaining Needed: {c.text(3)} ({c.text(5)})")
+            lines.append(f"[{c.text(0)}] {c.text(1)}:{c.text(2)} -> Total Required: {c.text(3)} | Remaining: {c.text(4)} ({c.text(6)})")
         if lines:
             QApplication.clipboard().setText("\n".join(lines))
             self.status_label.setText("Raw materials list copied to clipboard.")
@@ -1938,6 +2200,7 @@ class ModMaterialCalculatorGUI(QMainWindow):
 
     def filter_items(self) -> None:
         query = self.search_entry.text().lower().strip()
+        v_val = self.item_listwidget.verticalScrollBar().value()
         self.item_listwidget.clear()
 
         include_unrecognized = self.unrecognized_checkbox.isChecked()
@@ -1965,6 +2228,8 @@ class ModMaterialCalculatorGUI(QMainWindow):
                 widget_item.setData(Qt.UserRole, item)
                 self.item_listwidget.addItem(widget_item)
 
+        self.item_listwidget.verticalScrollBar().setValue(v_val)
+
     def add_selected_item(self) -> None:
         items = self.item_listwidget.selectedItems()
         if not items:
@@ -1976,8 +2241,7 @@ class ModMaterialCalculatorGUI(QMainWindow):
         qty = self.qty_spinbox.value()
         self.cart[item_id] = self.cart.get(item_id, 0) + qty
         self.refresh_cart_ui()
-        self.save_user_data()
-        self.trigger_async_calculation()
+        self.schedule_recalculation()
 
     def remove_cart_item(self) -> None:
         selected = self.cart_tree.selectedItems()
@@ -1987,20 +2251,24 @@ class ModMaterialCalculatorGUI(QMainWindow):
         if item_id in self.cart:
             del self.cart[item_id]
             self.refresh_cart_ui()
-            self.save_user_data()
-            self.trigger_async_calculation()
+            self.schedule_recalculation()
 
     def clear_cart(self) -> None:
         self.cart.clear()
         self.refresh_cart_ui()
-        self.save_user_data()
-        self.trigger_async_calculation()
+        self.schedule_recalculation()
 
     def refresh_cart_ui(self) -> None:
         self.cart_tree.blockSignals(True)
+        v_val = self.cart_tree.verticalScrollBar().value()
         self.cart_tree.clear()
         for item_id, qty in self.cart.items():
-            tree_item = QTreeWidgetItem([item_id, "", ""])
+            owned_qty = self.resolver.owned_inventory.get(item_id, 0)
+            rem_qty = max(0, qty - owned_qty)
+
+            cap_val = self.resolver.item_caps.get(item_id, None)
+            display_id = f"{item_id}  [⚡ Cap: {int(cap_val)}]" if cap_val is not None else item_id
+            tree_item = QTreeWidgetItem([display_id, "", str(rem_qty), ""])
             self.cart_tree.addTopLevelItem(tree_item)
 
             spin_needed = QSpinBox()
@@ -2011,17 +2279,17 @@ class ModMaterialCalculatorGUI(QMainWindow):
 
             spin_owned = QSpinBox()
             spin_owned.setRange(0, 1000000)
-            spin_owned.setValue(self.resolver.owned_inventory.get(item_id, 0))
+            spin_owned.setValue(owned_qty)
             spin_owned.valueChanged.connect(lambda val, i_id=item_id: self.on_cart_owned_qty_changed(i_id, val))
-            self.cart_tree.setItemWidget(tree_item, 2, spin_owned)
+            self.cart_tree.setItemWidget(tree_item, 3, spin_owned)
 
+        self.cart_tree.verticalScrollBar().setValue(v_val)
         self.cart_tree.blockSignals(False)
 
     def on_cart_qty_changed(self, item_id: str, new_qty: int) -> None:
         if item_id in self.cart:
             self.cart[item_id] = new_qty
-            self.save_user_data()
-            self.trigger_async_calculation()
+            self.schedule_recalculation()
 
     def on_cart_owned_qty_changed(self, item_id: str, new_owned_qty: int) -> None:
         if new_owned_qty > 0:
@@ -2029,8 +2297,7 @@ class ModMaterialCalculatorGUI(QMainWindow):
         else:
             if item_id in self.resolver.owned_inventory:
                 del self.resolver.owned_inventory[item_id]
-        self.save_user_data()
-        self.trigger_async_calculation()
+        self.schedule_recalculation()
 
     def on_raw_owned_qty_changed(self, item_id: str, new_owned_qty: int) -> None:
         if new_owned_qty > 0:
@@ -2038,16 +2305,25 @@ class ModMaterialCalculatorGUI(QMainWindow):
         else:
             if item_id in self.resolver.owned_inventory:
                 del self.resolver.owned_inventory[item_id]
-        self.save_user_data()
         self.refresh_cart_ui()
+        self.schedule_recalculation()
+
+    def schedule_recalculation(self) -> None:
+        self.status_label.setText("Waiting 1s for updates to finish...")
+        self.recalc_timer.start()
+
+    def _on_recalc_timer_timeout(self) -> None:
+        self.save_user_data()
         self.trigger_async_calculation()
 
     def trigger_async_calculation(self) -> None:
         if not self.cart:
             self.report_tree.clear()
             self.report_text.clear()
-            self._cached_raw_totals.clear()
-            self._cached_method_totals.clear()
+            self._cached_base_raw_totals.clear()
+            self._cached_base_method_totals.clear()
+            self._cached_rem_raw_totals.clear()
+            self._cached_rem_method_totals.clear()
             if not self.active_repos:
                 self.report_text.setText("[ Welcome! Click 'Manage Repos...' at the top to add your Minecraft mod JSON repository folders. ]")
             else:
@@ -2055,65 +2331,121 @@ class ModMaterialCalculatorGUI(QMainWindow):
             self.status_label.setText("Ready.")
             return
 
-        self.status_label.setText("Calculating remaining materials in background...")
+        self.status_label.setText("Calculating materials in background...")
         cart_snapshot = dict(self.cart)
         threading.Thread(target=self._async_calculate_worker, args=(cart_snapshot,), daemon=True).start()
 
     def _async_calculate_worker(self, cart_snapshot: Dict[str, int]) -> None:
-        grand_raw_totals: Dict[str, float] = defaultdict(float)
-        grand_method_totals: Dict[str, Dict[str, Any]] = defaultdict(lambda: defaultdict(lambda: {
+        # 1. Total Required (Zero Inventory)
+        base_raw_totals: Dict[str, float] = defaultdict(float)
+        base_method_totals: Dict[str, Dict[str, Any]] = defaultdict(lambda: defaultdict(lambda: {
             "amount": 0,
             "inputs": defaultdict(float)
         }))
-
-        item_usage_tracker: Dict[str, float] = defaultdict(float)
-        
-        with self.resolver._lock:
-            inventory_tracker = defaultdict(int, self.resolver.owned_inventory.copy())
+        item_usage_base: Dict[str, float] = defaultdict(float)
+        empty_inventory = defaultdict(int)
 
         for item, qty in cart_snapshot.items():
             raw_mats, methods = self.resolver.get_raw_materials(
-                item, target_amount=qty, item_usage_tracker=item_usage_tracker, inventory_tracker=inventory_tracker
+                item, target_amount=qty, item_usage_tracker=item_usage_base, inventory_tracker=empty_inventory
             )
             for r_id, r_qty in raw_mats.items():
-                grand_raw_totals[r_id] += r_qty
+                base_raw_totals[r_id] += r_qty
             for m_type, items in methods.items():
                 for sub_item, sub_data in items.items():
-                    grand_method_totals[m_type][sub_item]["amount"] += sub_data["amount"]
+                    base_method_totals[m_type][sub_item]["amount"] += sub_data["amount"]
                     for p_inp, p_qty in sub_data["inputs"].items():
-                        grand_method_totals[m_type][sub_item]["inputs"][p_inp] += p_qty
+                        base_method_totals[m_type][sub_item]["inputs"][p_inp] += p_qty
 
-        sanitized_methods = {}
-        for m_type, items_dict in grand_method_totals.items():
-            sanitized_methods[m_type] = {}
+        # 2. Total Remaining (Using User Inventory)
+        rem_raw_totals: Dict[str, float] = defaultdict(float)
+        rem_method_totals: Dict[str, Dict[str, Any]] = defaultdict(lambda: defaultdict(lambda: {
+            "amount": 0,
+            "inputs": defaultdict(float)
+        }))
+        item_usage_rem: Dict[str, float] = defaultdict(float)
+        with self.resolver._lock:
+            user_inventory = defaultdict(int, self.resolver.owned_inventory.copy())
+
+        for item, qty in cart_snapshot.items():
+            raw_mats, methods = self.resolver.get_raw_materials(
+                item, target_amount=qty, item_usage_tracker=item_usage_rem, inventory_tracker=user_inventory
+            )
+            for r_id, r_qty in raw_mats.items():
+                rem_raw_totals[r_id] += r_qty
+            for m_type, items in methods.items():
+                for sub_item, sub_data in items.items():
+                    rem_method_totals[m_type][sub_item]["amount"] += sub_data["amount"]
+                    for p_inp, p_qty in sub_data["inputs"].items():
+                        rem_method_totals[m_type][sub_item]["inputs"][p_inp] += p_qty
+
+        sanitized_base_methods = {}
+        for m_type, items_dict in base_method_totals.items():
+            sanitized_base_methods[m_type] = {}
             for item_id, data in items_dict.items():
-                sanitized_methods[m_type][item_id] = {
+                sanitized_base_methods[m_type][item_id] = {
                     "amount": data["amount"],
                     "inputs": dict(data["inputs"])
                 }
 
-        self.signals.calc_done.emit(dict(grand_raw_totals), sanitized_methods)
+        sanitized_rem_methods = {}
+        for m_type, items_dict in rem_method_totals.items():
+            sanitized_rem_methods[m_type] = {}
+            for item_id, data in items_dict.items():
+                sanitized_rem_methods[m_type][item_id] = {
+                    "amount": data["amount"],
+                    "inputs": dict(data["inputs"])
+                }
 
-    def _on_calculation_finished(self, grand_raw_totals: Dict[str, float], grand_method_totals: Dict[str, Dict[str, Any]]) -> None:
-        self._cached_raw_totals = grand_raw_totals
-        self._cached_method_totals = grand_method_totals
+        self.signals.calc_done.emit(
+            dict(base_raw_totals), sanitized_base_methods,
+            dict(rem_raw_totals), sanitized_rem_methods
+        )
+
+    def _on_calculation_finished(
+        self,
+        base_raw_totals: Dict[str, float],
+        base_method_totals: Dict[str, Dict[str, Any]],
+        rem_raw_totals: Dict[str, float],
+        rem_method_totals: Dict[str, Dict[str, Any]]
+    ) -> None:
+        self._cached_base_raw_totals = base_raw_totals
+        self._cached_base_method_totals = base_method_totals
+        self._cached_rem_raw_totals = rem_raw_totals
+        self._cached_rem_method_totals = rem_method_totals
         
         self.refresh_raw_materials_display()
         self.refresh_breakdown_display()
         self.status_label.setText("Calculation up to date.")
 
     def refresh_raw_materials_display(self) -> None:
-        if not self._cached_raw_totals:
+        self.report_tree.blockSignals(True)
+        v_val = self.report_tree.verticalScrollBar().value()
+        self.report_tree.clearSelection()
+        self.report_tree.setCurrentItem(None)
+        self.report_tree.clear()
+
+        if not self._cached_base_raw_totals and not self._cached_rem_raw_totals:
+            self.report_tree.blockSignals(False)
             return
 
-        self.report_tree.blockSignals(True)
-        self.report_tree.clear()
         sort_mode = self.raw_sort_combo.currentText()
-        raw_list = list(self._cached_raw_totals.items())
+        all_mats = sorted(list(set(self._cached_base_raw_totals.keys()) | set(self._cached_rem_raw_totals.keys())))
 
-        if "Highest Quantity" in sort_mode:
+        raw_list = []
+        for mat in all_mats:
+            req_amt = self._cached_base_raw_totals.get(mat, 0.0)
+            rem_amt = self._cached_rem_raw_totals.get(mat, 0.0)
+            raw_list.append((mat, req_amt, rem_amt))
+
+        # Sorting logic evaluating Total Remaining vs Total Required
+        if "Highest Total Remaining" in sort_mode:
+            raw_list.sort(key=lambda x: x[2], reverse=True)
+        elif "Lowest Total Remaining" in sort_mode:
+            raw_list.sort(key=lambda x: x[2])
+        elif "Highest" in sort_mode:
             raw_list.sort(key=lambda x: x[1], reverse=True)
-        elif "Lowest Quantity" in sort_mode:
+        elif "Lowest" in sort_mode:
             raw_list.sort(key=lambda x: x[1])
         elif "Alphabetical" in sort_mode:
             raw_list.sort(key=lambda x: x[0])
@@ -2123,32 +2455,39 @@ class ModMaterialCalculatorGUI(QMainWindow):
                 x[0]
             ))
         elif "Tags First" in sort_mode:
-            raw_list.sort(key=lambda x: (not x[0].startswith("#"), -x[1]))
+            raw_list.sort(key=lambda x: (not x[0].startswith("#"), -x[2]))
 
-        for mat, amt in raw_list:
-            amt_int = int(math.ceil(amt))
-            stacks = amt_int // 64
-            rem_items = amt_int % 64
+        for mat, req_amt, rem_amt in raw_list:
+            req_int = int(math.ceil(req_amt))
+            rem_int = int(math.ceil(rem_amt))
+            owned_amt = self.resolver.owned_inventory.get(mat, 0)
+
+            stacks = rem_int // 64
+            rem_items = rem_int % 64
 
             stack_str = f"{stacks} stacks + {rem_items}" if stacks >= 1 else "-"
 
             is_tag = mat.startswith("#")
             cat_str = "Tag" if is_tag else "Item"
             if mat in self.resolver.raw_overrides:
-                cat_str += " [🛑 Overridden]"
+                cat_str += " [🧱 Raw Material]"
+            if mat in self.resolver.item_caps:
+                cat_str += f" [⚡ Cap: {int(self.resolver.item_caps[mat])}]"
 
             clean_mat = mat.lstrip("#")
             ns, item_name = clean_mat.split(":", 1) if ":" in clean_mat else ("minecraft", clean_mat)
 
-            tree_item = QTreeWidgetItem([cat_str, ns, item_name, str(amt_int), "", stack_str])
+            # Columns: ["Category", "Namespace", "Item / Tag Name", "Total Required", "Total Remaining", "Total Owned", "Stacks / Remainder"]
+            tree_item = QTreeWidgetItem([cat_str, ns, item_name, str(req_int), str(rem_int), "", stack_str])
             self.report_tree.addTopLevelItem(tree_item)
 
             spin_owned = QSpinBox()
             spin_owned.setRange(0, 1000000)
-            spin_owned.setValue(self.resolver.owned_inventory.get(mat, 0))
+            spin_owned.setValue(owned_amt)
             spin_owned.valueChanged.connect(lambda val, m_id=mat: self.on_raw_owned_qty_changed(m_id, val))
-            self.report_tree.setItemWidget(tree_item, 4, spin_owned)
+            self.report_tree.setItemWidget(tree_item, 5, spin_owned)
 
+        self.report_tree.verticalScrollBar().setValue(v_val)
         self.report_tree.blockSignals(False)
 
     def _calculate_dependency_depths(self, grand_method_totals: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
@@ -2206,97 +2545,133 @@ class ModMaterialCalculatorGUI(QMainWindow):
         return depths
 
     def refresh_breakdown_display(self) -> None:
-        if not self._cached_method_totals:
+        if not self._cached_base_method_totals and not self._cached_rem_method_totals and not self.resolver.completed_steps:
+            self.report_text.clear()
             return
 
         sort_mode = self.craft_sort_combo.currentText()
-        depths = self._calculate_dependency_depths(self._cached_method_totals)
+        depths = self._calculate_dependency_depths(self._cached_base_method_totals or self._cached_rem_method_totals)
 
         html_blocks = []
 
-        if "Step Level" in sort_mode:
+        if not self._cached_rem_method_totals and self.resolver.completed_steps:
+            html_blocks.append("<h2 style='color:#27ae60;'>🎉 All Crafting Steps Completed!</h2>")
+
+        elif "Step Level" in sort_mode:
+            all_methods = set(self._cached_base_method_totals.keys()) | set(self._cached_rem_method_totals.keys())
+            
             flat_items = []
-            for method, items_dict in self._cached_method_totals.items():
-                for item_id, data in items_dict.items():
-                    flat_items.append((item_id, data, method))
+            seen = set()
+            for method in all_methods:
+                base_items = self._cached_base_method_totals.get(method, {})
+                rem_items = self._cached_rem_method_totals.get(method, {})
+                item_ids = set(base_items.keys()) | set(rem_items.keys())
+                for item_id in item_ids:
+                    key = (method, item_id)
+                    if key not in seen:
+                        seen.add(key)
+                        flat_items.append((item_id, method))
 
             level_groups = defaultdict(list)
-            for item_id, data, method in flat_items:
+            for item_id, method in flat_items:
                 lvl = depths.get(item_id, 0)
-                level_groups[lvl].append((item_id, data, method))
+                level_groups[lvl].append((item_id, method))
 
             sorted_levels = sorted(level_groups.keys(), reverse=("Descending" in sort_mode))
 
             for lvl in sorted_levels:
                 html_blocks.append(f"<h3 style='margin-bottom:4px; color:#2c3e50;'>=== [ Step Level {lvl} ] ===</h3>")
                 items_in_lvl = level_groups[lvl]
-                items_in_lvl.sort(key=lambda x: -(x[1]["amount"] if isinstance(x[1], dict) else x[1]))
+                items_in_lvl.sort(key=lambda x: -self._cached_base_method_totals.get(x[1], {}).get(x[0], {}).get("amount", 0))
 
-                for item_id, data, method in items_in_lvl:
-                    if isinstance(data, dict):
-                        amt = int(math.ceil(data["amount"]))
-                        inputs = data.get("inputs", {})
-                        
-                        action = "Craft"
-                        m_lower = method.lower()
-                        if "smelting" in m_lower or "furnace" in m_lower or "blasting" in m_lower:
-                            action = "Smelt"
-                        elif "crushing" in m_lower or "pulverizing" in m_lower or "grinding" in m_lower:
-                            action = "Crush"
+                for item_id, method in items_in_lvl:
+                    base_data = self._cached_base_method_totals.get(method, {}).get(item_id, {})
+                    rem_data = self._cached_rem_method_totals.get(method, {}).get(item_id, {})
 
-                        recipe_count = len(self.resolver.recipes.get(item_id, []))
-                        multi_badge = f" <font color='#e67e22' size='2'><b>[⚡ {recipe_count} Recipes]</b></font>" if recipe_count > 1 else ""
-                        origin_badge = f" <font color='#e74c3c' size='2'><b>[⚠️ Origin Unknown]</b></font>" if self.resolver.is_self_referential(item_id) else ""
-                        method_tag = f" <font color='#8e44ad' size='2'><i>(via {method})</i></font>"
-                        override_link = f" <a href='override:{item_id}' style='color:#e74c3c; font-size:11px; text-decoration:none;'>[🛑 Override Step]</a>"
+                    req_amt = int(math.ceil(base_data.get("amount", 0))) if isinstance(base_data, dict) else int(math.ceil(base_data or 0))
+                    rem_amt = int(math.ceil(rem_data.get("amount", 0))) if isinstance(rem_data, dict) else int(math.ceil(rem_data or 0))
+                    owned_amt = self.resolver.owned_inventory.get(item_id, 0)
 
-                        html_blocks.append(
-                            f"<div style='margin-top:6px;'><b>• {action} {amt}x <a href='item:{item_id}' style='color:#2980b9; text-decoration:none;'>{item_id}</a></b>{multi_badge}{origin_badge}{method_tag}{override_link}</div>"
-                        )
+                    inputs = base_data.get("inputs", {}) if isinstance(base_data, dict) else {}
+                    rem_inputs = rem_data.get("inputs", {}) if isinstance(rem_data, dict) else {}
 
-                        if inputs:
-                            html_blocks.append("<div style='margin-left: 24px; margin-top:2px; margin-bottom:6px; color:#555;'>")
-                            html_blocks.append("<i>↳ Inputs Required:</i><br/>")
-                            for ing_id, q in inputs.items():
-                                ing_qty = int(math.ceil(q))
-                                ing_recipe_count = len(self.resolver.recipes.get(ing_id, []))
-                                ing_badge = f" <font color='#e67e22' size='1'>[⚡ {ing_recipe_count} Recipes]</font>" if ing_recipe_count > 1 else ""
-                                ing_origin = f" <font color='#e74c3c' size='1'>[⚠️ Origin Unknown]</font>" if self.resolver.is_self_referential(ing_id) else ""
+                    action = "Craft"
+                    m_lower = method.lower()
+                    if "smelting" in m_lower or "furnace" in m_lower or "blasting" in m_lower:
+                        action = "Smelt"
+                    elif "crushing" in m_lower or "pulverizing" in m_lower or "grinding" in m_lower:
+                        action = "Crush"
 
-                                tag_badge = ""
-                                if ing_id.startswith("#"):
-                                    if ing_id in self.resolver.material_replacements:
-                                        replaced_with = self.resolver.material_replacements[ing_id]
-                                        tag_badge = f" <font color='#27ae60' size='1'><b>[🏷️ Selected: {replaced_with}]</b></font>"
-                                    else:
-                                        matches = self.resolver.get_items_matching_tag(ing_id)
-                                        if matches:
-                                            tag_badge = f" <font color='#2980b9' size='1'><b>[🏷️ {len(matches)} Options Available]</b></font>"
+                    recipe_count = len(self.resolver.recipes.get(item_id, []))
+                    multi_badge = f" <font color='#e67e22' size='2'><b>[⚡ {recipe_count} Recipes]</b></font>" if recipe_count > 1 else ""
+                    origin_badge = f" <font color='#e74c3c' size='2'><b>[⚠️ Origin Unknown]</b></font>" if self.resolver.is_self_referential(item_id) else ""
+                    method_tag = f" <font color='#8e44ad' size='2'><i>(via {method})</i></font>"
+                    cap_val = self.resolver.item_caps.get(item_id, None)
+                    cap_badge = f" <font color='#d35400' size='2'><b>[⚡ Cap: {int(cap_val)}]</b></font>" if cap_val is not None else ""
+                    
+                    complete_link = f" <a href='complete:{item_id}' style='color:#27ae60; font-size:11px; text-decoration:none;'>[✅ Mark Complete]</a>"
+                    raw_link = f" <a href='raw:{item_id}' style='color:#e67e22; font-size:11px; text-decoration:none;'>[🧱 Consider as Raw Material]</a>"
 
-                                html_blocks.append(
-                                    f"&nbsp;&nbsp;&nbsp;&nbsp;• {ing_qty}x <a href='item:{ing_id}' style='color:#27ae60; text-decoration:none;'>{ing_id}</a>{ing_badge}{ing_origin}{tag_badge}<br/>"
-                                )
-                            html_blocks.append("</div>")
-                    else:
-                        amt = int(math.ceil(data))
-                        method_tag = f" <font color='#8e44ad' size='2'><i>(via {method})</i></font>"
-                        override_link = f" <a href='override:{item_id}' style='color:#e74c3c; font-size:11px; text-decoration:none;'>[🛑 Override Step]</a>"
-                        html_blocks.append(f"<div>• Process {amt}x <a href='item:{item_id}' style='color:#2980b9;'>{item_id}</a>{method_tag}{override_link}</div>")
+                    counts_badge = f" <font color='#555' size='2'>(Required: <b>{req_amt}</b> | Remaining: <b>{rem_amt}</b> | Owned: <b>{owned_amt}</b>)</font>"
+
+                    html_blocks.append(
+                        f"<div style='margin-top:6px;'><b>• {action} <a href='item:{item_id}' style='color:#2980b9; text-decoration:none;'>{item_id}</a></b>{counts_badge}{multi_badge}{origin_badge}{method_tag}{cap_badge}{complete_link}{raw_link}</div>"
+                    )
+
+                    all_ing_ids = set(inputs.keys()) | set(rem_inputs.keys())
+                    if all_ing_ids:
+                        html_blocks.append("<div style='margin-left: 24px; margin-top:2px; margin-bottom:6px; color:#555;'>")
+                        html_blocks.append("<i>↳ Inputs Required:</i><br/>")
+                        for ing_id in sorted(list(all_ing_ids)):
+                            ing_req = int(math.ceil(inputs.get(ing_id, 0)))
+                            ing_rem = int(math.ceil(rem_inputs.get(ing_id, 0)))
+                            ing_owned = self.resolver.owned_inventory.get(ing_id, 0)
+
+                            ing_recipe_count = len(self.resolver.recipes.get(ing_id, []))
+                            ing_badge = f" <font color='#e67e22' size='1'>[⚡ {ing_recipe_count} Recipes]</font>" if ing_recipe_count > 1 else ""
+                            ing_origin = f" <font color='#e74c3c' size='1'>[⚠️ Origin Unknown]</font>" if self.resolver.is_self_referential(ing_id) else ""
+
+                            tag_badge = ""
+                            if ing_id.startswith("#"):
+                                if ing_id in self.resolver.material_replacements:
+                                    replaced_with = self.resolver.material_replacements[ing_id]
+                                    tag_badge = f" <font color='#27ae60' size='1'><b>[🏷️ Selected: {replaced_with}]</b></font>"
+                                else:
+                                    matches = self.resolver.get_items_matching_tag(ing_id)
+                                    if matches:
+                                        tag_badge = f" <font color='#2980b9' size='1'><b>[🏷️ {len(matches)} Options Available]</b></font>"
+
+                            ing_counts_badge = f" <font color='#7f8c8d' size='1'>(Req: <b>{ing_req}</b> | Rem: <b>{ing_rem}</b> | Owned: <b>{ing_owned}</b>)</font>"
+
+                            html_blocks.append(
+                                f"&nbsp;&nbsp;&nbsp;&nbsp;• <a href='item:{ing_id}' style='color:#27ae60; text-decoration:none;'>{ing_id}</a>{ing_counts_badge}{ing_badge}{ing_origin}{tag_badge}<br/>"
+                            )
+                        html_blocks.append("</div>")
 
         else:
-            for method, items_dict in self._cached_method_totals.items():
+            all_methods = sorted(list(set(self._cached_base_method_totals.keys()) | set(self._cached_rem_method_totals.keys())))
+            for method in all_methods:
                 html_blocks.append(f"<h3 style='margin-bottom:4px; color:#2c3e50;'>=== [ Method: {method} ] ===</h3>")
-                items_list = list(items_dict.items())
+                
+                base_items = self._cached_base_method_totals.get(method, {})
+                rem_items = self._cached_rem_method_totals.get(method, {})
+                item_ids = sorted(list(set(base_items.keys()) | set(rem_items.keys())))
+
+                items_list = []
+                for item_id in item_ids:
+                    b_data = base_items.get(item_id, {})
+                    r_data = rem_items.get(item_id, {})
+                    items_list.append((item_id, b_data, r_data))
 
                 if "Prerequisites First" in sort_mode:
                     items_list.sort(key=lambda x: (
                         depths.get(x[0], 0),
-                        -(x[1]["amount"] if isinstance(x[1], dict) else x[1])
+                        -(x[1].get("amount", 0) if isinstance(x[1], dict) else (x[1] or 0))
                     ))
                 elif "Highest Quantity" in sort_mode:
-                    items_list.sort(key=lambda x: x[1]["amount"] if isinstance(x[1], dict) else x[1], reverse=True)
+                    items_list.sort(key=lambda x: x[1].get("amount", 0) if isinstance(x[1], dict) else (x[1] or 0), reverse=True)
                 elif "Lowest Quantity" in sort_mode:
-                    items_list.sort(key=lambda x: x[1]["amount"] if isinstance(x[1], dict) else x[1])
+                    items_list.sort(key=lambda x: x[1].get("amount", 0) if isinstance(x[1], dict) else (x[1] or 0))
                 elif "Alphabetical" in sort_mode:
                     items_list.sort(key=lambda x: x[0])
                 elif "Namespace" in sort_mode:
@@ -2305,57 +2680,74 @@ class ModMaterialCalculatorGUI(QMainWindow):
                         x[0]
                     ))
 
-                for item_id, data in items_list:
-                    if isinstance(data, dict):
-                        amt = int(math.ceil(data["amount"]))
-                        inputs = data.get("inputs", {})
-                        
-                        action = "Craft"
-                        m_lower = method.lower()
-                        if "smelting" in m_lower or "furnace" in m_lower or "blasting" in m_lower:
-                            action = "Smelt"
-                        elif "crushing" in m_lower or "pulverizing" in m_lower or "grinding" in m_lower:
-                            action = "Crush"
+                for item_id, base_data, rem_data in items_list:
+                    req_amt = int(math.ceil(base_data.get("amount", 0))) if isinstance(base_data, dict) else int(math.ceil(base_data or 0))
+                    rem_amt = int(math.ceil(rem_data.get("amount", 0))) if isinstance(rem_data, dict) else int(math.ceil(rem_data or 0))
+                    owned_amt = self.resolver.owned_inventory.get(item_id, 0)
 
-                        depth_tag = f" <font color='#7f8c8d'>[Step Lvl {depths.get(item_id, 0)}]</font>" if "Prerequisites First" in sort_mode else ""
-                        recipe_count = len(self.resolver.recipes.get(item_id, []))
-                        multi_badge = f" <font color='#e67e22' size='2'><b>[⚡ {recipe_count} Recipes]</b></font>" if recipe_count > 1 else ""
-                        origin_badge = f" <font color='#e74c3c' size='2'><b>[⚠️ Origin Unknown]</b></font>" if self.resolver.is_self_referential(item_id) else ""
-                        override_link = f" <a href='override:{item_id}' style='color:#e74c3c; font-size:11px; text-decoration:none;'>[🛑 Override Step]</a>"
+                    inputs = base_data.get("inputs", {}) if isinstance(base_data, dict) else {}
+                    rem_inputs = rem_data.get("inputs", {}) if isinstance(rem_data, dict) else {}
 
-                        html_blocks.append(
-                            f"<div style='margin-top:6px;'><b>• {action} {amt}x <a href='item:{item_id}' style='color:#2980b9; text-decoration:none;'>{item_id}</a></b>{multi_badge}{origin_badge}{depth_tag}{override_link}</div>"
-                        )
+                    action = "Craft"
+                    m_lower = method.lower()
+                    if "smelting" in m_lower or "furnace" in m_lower or "blasting" in m_lower:
+                        action = "Smelt"
+                    elif "crushing" in m_lower or "pulverizing" in m_lower or "grinding" in m_lower:
+                        action = "Crush"
 
-                        if inputs:
-                            html_blocks.append("<div style='margin-left: 24px; margin-top:2px; margin-bottom:6px; color:#555;'>")
-                            html_blocks.append("<i>↳ Inputs Required:</i><br/>")
-                            for ing_id, q in inputs.items():
-                                ing_qty = int(math.ceil(q))
-                                ing_recipe_count = len(self.resolver.recipes.get(ing_id, []))
-                                ing_badge = f" <font color='#e67e22' size='1'>[⚡ {ing_recipe_count} Recipes]</font>" if ing_recipe_count > 1 else ""
-                                ing_origin = f" <font color='#e74c3c' size='1'>[⚠️ Origin Unknown]</font>" if self.resolver.is_self_referential(ing_id) else ""
+                    depth_tag = f" <font color='#7f8c8d'>[Step Lvl {depths.get(item_id, 0)}]</font>" if "Prerequisites First" in sort_mode else ""
+                    recipe_count = len(self.resolver.recipes.get(item_id, []))
+                    multi_badge = f" <font color='#e67e22' size='2'><b>[⚡ {recipe_count} Recipes]</b></font>" if recipe_count > 1 else ""
+                    origin_badge = f" <font color='#e74c3c' size='2'><b>[⚠️ Origin Unknown]</b></font>" if self.resolver.is_self_referential(item_id) else ""
+                    
+                    complete_link = f" <a href='complete:{item_id}' style='color:#27ae60; font-size:11px; text-decoration:none;'>[✅ Mark Complete]</a>"
+                    raw_link = f" <a href='raw:{item_id}' style='color:#e67e22; font-size:11px; text-decoration:none;'>[🧱 Consider as Raw Material]</a>"
 
-                                tag_badge = ""
-                                if ing_id.startswith("#"):
-                                    if ing_id in self.resolver.material_replacements:
-                                        replaced_with = self.resolver.material_replacements[ing_id]
-                                        tag_badge = f" <font color='#27ae60' size='1'><b>[🏷️ Selected: {replaced_with}]</b></font>"
-                                    else:
-                                        matches = self.resolver.get_items_matching_tag(ing_id)
-                                        if matches:
-                                            tag_badge = f" <font color='#2980b9' size='1'><b>[🏷️ {len(matches)} Options Available]</b></font>"
+                    counts_badge = f" <font color='#555' size='2'>(Required: <b>{req_amt}</b> | Remaining: <b>{rem_amt}</b> | Owned: <b>{owned_amt}</b>)</font>"
 
-                                html_blocks.append(
-                                    f"&nbsp;&nbsp;&nbsp;&nbsp;• {ing_qty}x <a href='item:{ing_id}' style='color:#27ae60; text-decoration:none;'>{ing_id}</a>{ing_badge}{ing_origin}{tag_badge}<br/>"
-                                )
-                            html_blocks.append("</div>")
-                    else:
-                        amt = int(math.ceil(data))
-                        override_link = f" <a href='override:{item_id}' style='color:#e74c3c; font-size:11px; text-decoration:none;'>[🛑 Override Step]</a>"
-                        html_blocks.append(f"<div>• Process {amt}x <a href='item:{item_id}' style='color:#2980b9;'>{item_id}</a>{override_link}</div>")
+                    html_blocks.append(
+                        f"<div style='margin-top:6px;'><b>• {action} <a href='item:{item_id}' style='color:#2980b9; text-decoration:none;'>{item_id}</a></b>{counts_badge}{multi_badge}{origin_badge}{depth_tag}{complete_link}{raw_link}</div>"
+                    )
 
+                    all_ing_ids = set(inputs.keys()) | set(rem_inputs.keys())
+                    if all_ing_ids:
+                        html_blocks.append("<div style='margin-left: 24px; margin-top:2px; margin-bottom:6px; color:#555;'>")
+                        html_blocks.append("<i>↳ Inputs Required:</i><br/>")
+                        for ing_id in sorted(list(all_ing_ids)):
+                            ing_req = int(math.ceil(inputs.get(ing_id, 0)))
+                            ing_rem = int(math.ceil(rem_inputs.get(ing_id, 0)))
+                            ing_owned = self.resolver.owned_inventory.get(ing_id, 0)
+
+                            ing_recipe_count = len(self.resolver.recipes.get(ing_id, []))
+                            ing_badge = f" <font color='#e67e22' size='1'>[⚡ {ing_recipe_count} Recipes]</font>" if ing_recipe_count > 1 else ""
+                            ing_origin = f" <font color='#e74c3c' size='1'>[⚠️ Origin Unknown]</font>" if self.resolver.is_self_referential(ing_id) else ""
+
+                            tag_badge = ""
+                            if ing_id.startswith("#"):
+                                if ing_id in self.resolver.material_replacements:
+                                    replaced_with = self.resolver.material_replacements[ing_id]
+                                    tag_badge = f" <font color='#27ae60' size='1'><b>[🏷️ Selected: {replaced_with}]</b></font>"
+                                else:
+                                    matches = self.resolver.get_items_matching_tag(ing_id)
+                                    if matches:
+                                        tag_badge = f" <font color='#2980b9' size='1'><b>[🏷️ {len(matches)} Options Available]</b></font>"
+
+                            ing_counts_badge = f" <font color='#7f8c8d' size='1'>(Req: <b>{ing_req}</b> | Rem: <b>{ing_rem}</b> | Owned: <b>{ing_owned}</b>)</font>"
+
+                            html_blocks.append(
+                                f"&nbsp;&nbsp;&nbsp;&nbsp;• <a href='item:{ing_id}' style='color:#27ae60; text-decoration:none;'>{ing_id}</a>{ing_counts_badge}{ing_badge}{ing_origin}{tag_badge}<br/>"
+                            )
+                        html_blocks.append("</div>")
+
+        if self.resolver.completed_steps:
+            html_blocks.append("<h3 style='margin-top:16px; margin-bottom:4px; color:#27ae60;'>=== [ Completed Steps (Set Aside) ] ===</h3>")
+            for comp_id in sorted(list(self.resolver.completed_steps)):
+                undo_link = f" <a href='complete:{comp_id}' style='color:#27ae60; font-size:11px; text-decoration:none;'>[↩️ Undo Mark Complete]</a>"
+                html_blocks.append(f"<div style='margin-top:2px; color:#7f8c8d;'>• <strike>{comp_id}</strike>{undo_link}</div>")
+
+        v_val = self.report_text.verticalScrollBar().value()
         self.report_text.setHtml("".join(html_blocks))
+        self.report_text.verticalScrollBar().setValue(v_val)
 
 
 if __name__ == "__main__":
