@@ -22,7 +22,6 @@ from PySide6.QtGui import QFont, QAction, QDesktopServices
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
 # Set reference list
 COLORS = {
     'WHITE': '#ffffff',
@@ -30,7 +29,10 @@ COLORS = {
     'GREY': '#7f8c8d',
     'BLUE': '#2980b9',
     'RED': '#c0392b',
-    'GOLDEN_AMBER': '#f39c12'
+    'GOLDEN_AMBER': '#f39c12',
+    'LIGHT_BLUE': '#3498db',
+    'ORANGE': '#e67e22',
+    'SOFT_RED': '#e74c3c'
 }
 WEIGHTS = {
     'BOLD': 'bold'
@@ -54,7 +56,8 @@ TEXT_OPTIONS = {
     },
     'OB': {
         # origin_box
-        'BG_COLOR': COLORS['RED']
+        'BG_COLOR': COLORS['RED'],
+        'COLOR': COLORS['WHITE']
     },
     'MCRF': {
         # Multiple Crafting Recipes Found!
@@ -64,9 +67,36 @@ TEXT_OPTIONS = {
     'AUT': {
         # Advancement Unlock Triggers
         'COLOR': COLORS['BRIGHT_GREEN']
+    },
+    'AT': {
+        # Associated Tags
+        'COLOR': COLORS['LIGHT_BLUE']
+    },
+    'UMC': {
+        # Undo Mark Complete
+        'BG_COLOR': COLORS['GOLDEN_AMBER'],
+        'COLOR': COLORS['WHITE']
+    },
+    'MSC': {
+        # Mark Step Complete
+        'BG_COLOR': COLORS['BRIGHT_GREEN'],
+        'COLOR': COLORS['WHITE']
+    },
+    'RCR': {
+        # Restore Crafting Recipe
+        'BG_COLOR': COLORS['BLUE'],
+        'COLOR': COLORS['WHITE']
+    },
+    'CRM': {
+        # Consider as Raw Material
+        'BG_COLOR': COLORS['ORANGE'],
+        'COLOR': COLORS['WHITE']
+    },
+    'SRO': {
+        # Self-Referential Origin
+        'COLOR': COLORS['SOFT_RED']
     }
 }
-
 
 # ==================== CROSS-PLATFORM PATH HELPER ====================
 def get_user_data_filepath(filename: str = "user_data.json") -> str:
@@ -846,7 +876,7 @@ class ItemInspectorDialog(QDialog):
             origin_layout.setContentsMargins(8, 6, 8, 6)
 
             alert_text = QLabel("⚠️ <b>Origin Unknown:</b> Item requires itself as a crafting ingredient. Initial origin must be acquired externally.")
-            alert_text.setStyleSheet("color: white;")
+            alert_text.setStyleSheet(f"color: {TEXT_OPTIONS['OB']['COLOR']};")
             alert_text.setWordWrap(True)
             origin_layout.addWidget(alert_text, stretch=1)
 
@@ -868,15 +898,14 @@ class ItemInspectorDialog(QDialog):
         adv_trigs = self.resolver.advancement_triggers.get(self.item_id, set())
         if adv_trigs:
             trig_str = ", ".join(list(adv_trigs)[:5])
-            layout.addWidget(QLabel(f"🔑 <b>Recipe Unlocked By Trigger:</b> <font color='#27ae60'>{trig_str}</font>"))
+        layout.addWidget(QLabel(f"🔑 <b>Recipe Unlocked By Trigger:</b> <font color='{TEXT_OPTIONS['AUT']['COLOR']}'>{trig_str}</font>"))
 
         matching_tags = self.resolver.get_matching_tags_for_item(item_id)
         if matching_tags:
             tag_str = ", ".join(matching_tags[:6])
             if len(matching_tags) > 6:
                 tag_str += f" (+{len(matching_tags) - 6} more)"
-            layout.addWidget(QLabel(f"<b>Associated Tags:</b> <font color='#3498db'>{tag_str}</font>"))
-
+            layout.addWidget(QLabel(f"<b>Associated Tags:</b> <font color='{TEXT_OPTIONS['AT']['COLOR']}'>{tag_str}</font>"))
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
@@ -941,17 +970,17 @@ class ItemInspectorDialog(QDialog):
     def update_action_btn_states(self) -> None:
         if self.item_id in self.resolver.completed_steps:
             self.complete_btn.setText("↩️ Undo Mark Complete")
-            self.complete_btn.setStyleSheet("background-color: #f39c12; color: white;")
+            self.complete_btn.setStyleSheet(f"background-color: {TEXT_OPTIONS['UMC']['BG_COLOR']}; color: {TEXT_OPTIONS['UMC']['COLOR']};")
         else:
             self.complete_btn.setText("✅ Mark Step Complete")
-            self.complete_btn.setStyleSheet("background-color: #27ae60; color: white;")
+            self.complete_btn.setStyleSheet(f"background-color: {TEXT_OPTIONS['MSC']['BG_COLOR']}; color: {TEXT_OPTIONS['MSC']['COLOR']};")
 
         if self.item_id in self.resolver.raw_overrides:
             self.raw_override_btn.setText("🛠️ Restore Crafting Recipe")
-            self.raw_override_btn.setStyleSheet("background-color: #2980b9; color: white;")
+            self.raw_override_btn.setStyleSheet(f"background-color: {TEXT_OPTIONS['RCR']['BG_COLOR']}; color: {TEXT_OPTIONS['RCR']['COLOR']};")
         else:
             self.raw_override_btn.setText("🧱 Consider as Raw Material")
-            self.raw_override_btn.setStyleSheet("background-color: #e67e22; color: white;")
+            self.raw_override_btn.setStyleSheet(f"background-color: {TEXT_OPTIONS['CRM']['BG_COLOR']}; color: {TEXT_OPTIONS['CRM']['COLOR']};")
 
     def toggle_complete(self) -> None:
         self.resolver.toggle_completed_step(self.item_id)
@@ -1028,7 +1057,7 @@ class ItemInspectorDialog(QDialog):
             for ing_id, ing_qty in recipe['inputs'].items():
                 norm_ing = self.resolver.normalize_id(ing_id)
                 if norm_ing == norm_self:
-                    box_layout.addWidget(QLabel(f"  • {ing_qty} x {ing_id} <font color='#e74c3c'><b>(⚠️ Self-Referential — Origin Unknown)</b></font>"))
+                    box_layout.addWidget(QLabel(f"  • {ing_qty} x {ing_id} <font color='{TEXT_OPTIONS['SRO']['COLOR']}'><b>(⚠️ Self-Referential — Origin Unknown)</b></font>"))
                 else:
                     box_layout.addWidget(QLabel(f"  • {ing_qty} x {ing_id}"))
 
@@ -2211,7 +2240,8 @@ class MaterialCalculatorGUI(QMainWindow):
         root = self.report_tree.invisibleRootItem()
         for i in range(root.childCount()):
             c = root.child(i)
-            lines.append(f"[{c.text(0)}] {c.text(1)}:{c.text(2)} -> Total Required: {c.text(3)} | Remaining: {c.text(4)} ({c.text(6)})")
+            if c is not None:
+                lines.append(f"[{c.text(0)}] {c.text(1)}:{c.text(2)} -> Total Required: {c.text(3)} | Remaining: {c.text(4)} ({c.text(6)})")
         if lines:
             QApplication.clipboard().setText("\n".join(lines))
             self.status_label.setText("Raw materials list copied to clipboard.")
