@@ -23,6 +23,7 @@ from PySide6.QtGui import QFont, QAction, QDesktopServices
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 # Set reference list
+# Set reference list
 COLORS = {
     'WHITE': '#ffffff',
     'BRIGHT_GREEN': '#27ae60',
@@ -32,7 +33,11 @@ COLORS = {
     'GOLDEN_AMBER': '#f39c12',
     'LIGHT_BLUE': '#3498db',
     'ORANGE': '#e67e22',
-    'SOFT_RED': '#e74c3c'
+    'SOFT_RED': '#e74c3c',
+    'DARK_SLATE': '#2c3e50',
+    'PURPLE': '#8e44ad',
+    'BURNT_ORANGE': '#d35400',
+    'DARK_GREY': '#555555'
 }
 WEIGHTS = {
     'BOLD': 'bold'
@@ -54,10 +59,10 @@ TEXT_OPTIONS = {
         'COLOR': COLORS['WHITE'],
         'WEIGHT': WEIGHTS['BOLD']
     },
-    'OB': {
-        # origin_box
+    'OU': {
+        # Origin Unknown
         'BG_COLOR': COLORS['RED'],
-        'COLOR': COLORS['WHITE']
+        'COLOR': COLORS['SOFT_RED']
     },
     'MCRF': {
         # Multiple Crafting Recipes Found!
@@ -68,33 +73,56 @@ TEXT_OPTIONS = {
         # Advancement Unlock Triggers
         'COLOR': COLORS['BRIGHT_GREEN']
     },
-    'AT': {
-        # Associated Tags
-        'COLOR': COLORS['LIGHT_BLUE']
+    'ACSC': {
+        # All Crafting Steps Completed
+        'COLOR': COLORS['BRIGHT_GREEN']
     },
-    'UMC': {
-        # Undo Mark Complete
-        'BG_COLOR': COLORS['GOLDEN_AMBER'],
-        'COLOR': COLORS['WHITE']
+    'SL': {
+        # Step Level
+        'COLOR': COLORS['GREY']
     },
-    'MSC': {
-        # Mark Step Complete
-        'BG_COLOR': COLORS['BRIGHT_GREEN'],
-        'COLOR': COLORS['WHITE']
+    'RC': {
+        # Recipe Count
+        'COLOR': COLORS['ORANGE']
     },
-    'RCR': {
-        # Restore Crafting Recipe
-        'BG_COLOR': COLORS['BLUE'],
-        'COLOR': COLORS['WHITE']
+    'METHOD': {
+        'COLOR': COLORS['PURPLE']
     },
-    'CRM': {
-        # Consider as Raw Material
-        'BG_COLOR': COLORS['ORANGE'],
-        'COLOR': COLORS['WHITE']
+    'CAP': {
+        'COLOR': COLORS['BURNT_ORANGE']
     },
-    'SRO': {
-        # Self-Referential Origin
-        'COLOR': COLORS['SOFT_RED']
+    'COMPLETE': {
+        'COLOR': COLORS['BRIGHT_GREEN']
+    },
+    'RM': {
+        # Raw Material
+        'COLOR': COLORS['ORANGE']
+    },
+    'COUNT': {
+        'COLOR': COLORS['GREY']
+    },
+    'TAGS': {
+        'COLOR': COLORS['BLUE']
+    },
+    'IR': {
+        # Inputs Required
+        'COLOR': COLORS['DARK_GREY']
+    },
+    'RT': {
+        # replacement tag
+        'COLOR': COLORS['BRIGHT_GREEN']
+    },
+    'CII': {
+        # craft item id
+        'COLOR': COLORS['BLUE']
+    },
+    'II': {
+        # ingredient id
+        'COLOR': COLORS['BRIGHT_GREEN']
+    },
+    'MD': {
+        # method divider
+        'COLOR': COLORS['DARK_SLATE']
     }
 }
 
@@ -802,7 +830,7 @@ class TagInspectorDialog(QDialog):
     def update_override_banner(self) -> None:
         current_target = self.resolver.material_replacements.get(self.tag_id)
         if current_target:
-            self.override_banner.setText(f"🏷️ <b>Active Item Substitution:</b> Using <font color='{TEXT_OPTIONS['AIS']['COLOR']}'><b>{current_target}</b></font> in place of {self.tag_id}")
+            self.override_banner.setText(f"🏷️️ <b>Active Item Substitution:</b> Using <font color='{TEXT_OPTIONS['AIS']['COLOR']}'><b>{current_target}</b></font> in place of {self.tag_id}")
             self.override_banner.setStyleSheet(f"background-color: {TEXT_OPTIONS['AIS']['BG_COLOR']}; color: {TEXT_OPTIONS['AIS']['COLOR']}; padding: 6px; border-radius: 4px;")
             self.clear_btn.setEnabled(True)
         else:
@@ -893,12 +921,6 @@ class ItemInspectorDialog(QDialog):
             alert.setStyleSheet(f"background-color: {TEXT_OPTIONS['MCRF']['BG_COLOR']}; color: {TEXT_OPTIONS['MCRF']['COLOR']}; padding: 6px; border-radius: 4px;")
             alert.setAlignment(Qt.AlignmentFlag.AlignCenter)
             layout.addWidget(alert)
-
-        # Advancement Unlock Triggers
-        adv_trigs = self.resolver.advancement_triggers.get(self.item_id, set())
-        if adv_trigs:
-            trig_str = ", ".join(list(adv_trigs)[:5])
-        layout.addWidget(QLabel(f"🔑 <b>Recipe Unlocked By Trigger:</b> <font color='{TEXT_OPTIONS['AUT']['COLOR']}'>{trig_str}</font>"))
 
         matching_tags = self.resolver.get_matching_tags_for_item(item_id)
         if matching_tags:
@@ -2622,7 +2644,7 @@ class MaterialCalculatorGUI(QMainWindow):
         html_blocks = []
 
         if not self._cached_rem_method_totals and self.resolver.completed_steps:
-            html_blocks.append("<h2 style='color:#27ae60;'>🎉 All Crafting Steps Completed!</h2>")
+            html_blocks.append(f"<h2 style='color:{TEXT_OPTIONS['ACSC']['COLOR']};'>🎉 All Crafting Steps Completed!</h2>")
 
         elif "Step Level" in sort_mode:
             all_methods = set(self._cached_base_method_totals.keys()) | set(self._cached_rem_method_totals.keys())
@@ -2647,7 +2669,7 @@ class MaterialCalculatorGUI(QMainWindow):
             sorted_levels = sorted(level_groups.keys(), reverse=("Descending" in sort_mode))
 
             for lvl in sorted_levels:
-                html_blocks.append(f"<h3 style='margin-bottom:4px; color:#2c3e50;'>=== [ Step Level {lvl} ] ===</h3>")
+                html_blocks.append(f"<h3 style='margin-bottom:4px; color:{TEXT_OPTIONS['SL']['COLOR']};'>=== [ Step Level {lvl} ] ===</h3>")
                 items_in_lvl = level_groups[lvl]
                 items_in_lvl.sort(key=lambda x: -self._cached_base_method_totals.get(x[1], {}).get(x[0], {}).get("amount", 0))
 
@@ -2670,24 +2692,24 @@ class MaterialCalculatorGUI(QMainWindow):
                         action = "Crush"
 
                     recipe_count = len(self.resolver.recipes.get(item_id, []))
-                    multi_badge = f" <font color='#e67e22' size='2'><b>[⚡ {recipe_count} Recipes]</b></font>" if recipe_count > 1 else ""
-                    origin_badge = f" <font color='#e74c3c' size='2'><b>[⚠️ Origin Unknown]</b></font>" if self.resolver.is_self_referential(item_id) else ""
-                    method_tag = f" <font color='#8e44ad' size='2'><i>(via {method})</i></font>"
+                    multi_badge = f" <font color='{TEXT_OPTIONS['RC']['COLOR']}' size='2'><b>[⚡ {recipe_count} Recipes]</b></font>" if recipe_count > 1 else ""
+                    origin_badge = f" <font color='{TEXT_OPTIONS['OU']['COLOR']}' size='2'><b>[⚠️ Origin Unknown]</b></font>" if self.resolver.is_self_referential(item_id) else ""
+                    method_tag = f" <font color='{TEXT_OPTIONS['METHOD']['COLOR']}' size='2'><i>(via {method})</i></font>"
                     cap_val = self.resolver.item_caps.get(item_id, None)
-                    cap_badge = f" <font color='#d35400' size='2'><b>[⚡ Cap: {int(cap_val)}]</b></font>" if cap_val is not None else ""
+                    cap_badge = f" <font color='{TEXT_OPTIONS['CAP']['COLOR']}' size='2'><b>[⚡ Cap: {int(cap_val)}]</b></font>" if cap_val is not None else ""
                     
-                    complete_link = f" <a href='complete:{item_id}' style='color:#27ae60; font-size:11px; text-decoration:none;'>[✅ Mark Complete]</a>"
-                    raw_link = f" <a href='raw:{item_id}' style='color:#e67e22; font-size:11px; text-decoration:none;'>[🧱 Consider as Raw Material]</a>"
+                    complete_link = f" <a href='complete:{item_id}' style='color:{TEXT_OPTIONS['COMPLETE']['COLOR']}; font-size:11px; text-decoration:none;'>[✅ Mark Complete]</a>"
+                    raw_link = f" <a href='raw:{item_id}' style='color:{TEXT_OPTIONS['RM']['COLOR']}; font-size:11px; text-decoration:none;'>[🧱 Consider as Raw Material]</a>"
 
-                    counts_badge = f" <font color='#555' size='2'>(Required: <b>{req_amt}</b> | Remaining: <b>{rem_amt}</b> | Owned: <b>{owned_amt}</b>)</font>"
+                    counts_badge = f" <font color='{TEXT_OPTIONS['COUNT']['COLOR']}' size='2'>(Required: <b>{req_amt}</b> | Remaining: <b>{rem_amt}</b> | Owned: <b>{owned_amt}</b>)</font>"
 
                     html_blocks.append(
-                        f"<div style='margin-top:6px;'><b>• {action} <a href='item:{item_id}' style='color:#2980b9; text-decoration:none;'>{item_id}</a></b>{counts_badge}{multi_badge}{origin_badge}{method_tag}{cap_badge}{complete_link}{raw_link}</div>"
+                        f"<div style='margin-top:6px;'><b>• {action} <a href='item:{item_id}' style='color:{TEXT_OPTIONS['TAGS']['COLOR']}; text-decoration:none;'>{item_id}</a></b>{counts_badge}{multi_badge}{origin_badge}{method_tag}{cap_badge}{complete_link}{raw_link}</div>"
                     )
 
                     all_ing_ids = set(inputs.keys()) | set(rem_inputs.keys())
                     if all_ing_ids:
-                        html_blocks.append("<div style='margin-left: 24px; margin-top:2px; margin-bottom:6px; color:#555;'>")
+                        html_blocks.append(f"<div style='margin-left: 24px; margin-top:2px; margin-bottom:6px; color:{TEXT_OPTIONS['IR']['COLOR']};'>")
                         html_blocks.append("<i>↳ Inputs Required:</i><br/>")
                         for ing_id in sorted(list(all_ing_ids)):
                             ing_req = int(math.ceil(inputs.get(ing_id, 0)))
@@ -2695,30 +2717,30 @@ class MaterialCalculatorGUI(QMainWindow):
                             ing_owned = self.resolver.owned_inventory.get(ing_id, 0)
 
                             ing_recipe_count = len(self.resolver.recipes.get(ing_id, []))
-                            ing_badge = f" <font color='#e67e22' size='1'>[⚡ {ing_recipe_count} Recipes]</font>" if ing_recipe_count > 1 else ""
-                            ing_origin = f" <font color='#e74c3c' size='1'>[⚠️ Origin Unknown]</font>" if self.resolver.is_self_referential(ing_id) else ""
+                            ing_badge = f" <font color='{TEXT_OPTIONS['RC']['COLOR']}' size='1'>[⚡ {ing_recipe_count} Recipes]</font>" if ing_recipe_count > 1 else ""
+                            ing_origin = f" <font color='{TEXT_OPTIONS['OU']['COLOR']}' size='1'>[⚠️ Origin Unknown]</font>" if self.resolver.is_self_referential(ing_id) else ""
 
                             tag_badge = ""
                             if ing_id.startswith("#"):
                                 if ing_id in self.resolver.material_replacements:
                                     replaced_with = self.resolver.material_replacements[ing_id]
-                                    tag_badge = f" <font color='#27ae60' size='1'><b>[🏷️ Selected: {replaced_with}]</b></font>"
+                                    tag_badge = f" <font color='{TEXT_OPTIONS['RT']['COLOR']}' size='1'><b>[🏷️ Selected: {replaced_with}]</b></font>"
                                 else:
                                     matches = self.resolver.get_items_matching_tag(ing_id)
                                     if matches:
-                                        tag_badge = f" <font color='#2980b9' size='1'><b>[🏷️ {len(matches)} Options Available]</b></font>"
+                                        tag_badge = f" <font color='{TEXT_OPTIONS['TAGS']['COLOR']}' size='1'><b>[🏷️ {len(matches)} Options Available]</b></font>"
 
-                            ing_counts_badge = f" <font color='#7f8c8d' size='1'>(Req: <b>{ing_req}</b> | Rem: <b>{ing_rem}</b> | Owned: <b>{ing_owned}</b>)</font>"
+                            ing_counts_badge = f" <font color='{TEXT_OPTIONS['COUNT']['COLOR']}' size='1'>(Req: <b>{ing_req}</b> | Rem: <b>{ing_rem}</b> | Owned: <b>{ing_owned}</b>)</font>"
 
                             html_blocks.append(
-                                f"&nbsp;&nbsp;&nbsp;&nbsp;• <a href='item:{ing_id}' style='color:#27ae60; text-decoration:none;'>{ing_id}</a>{ing_counts_badge}{ing_badge}{ing_origin}{tag_badge}<br/>"
+                                f"&nbsp;&nbsp;&nbsp;&nbsp;• <a href='item:{ing_id}' style='color:{TEXT_OPTIONS['IIC']['COLOR']}; text-decoration:none;'>{ing_id}</a>{ing_counts_badge}{ing_badge}{ing_origin}{tag_badge}<br/>"
                             )
                         html_blocks.append("</div>")
 
         else:
             all_methods = sorted(list(set(self._cached_base_method_totals.keys()) | set(self._cached_rem_method_totals.keys())))
             for method in all_methods:
-                html_blocks.append(f"<h3 style='margin-bottom:4px; color:#2c3e50;'>=== [ Method: {method} ] ===</h3>")
+                html_blocks.append(f"<h3 style='margin-bottom:4px; color:{TEXT_OPTIONS['MD']['COLOR']};'>=== [ Method: {method} ] ===</h3>")
                 
                 base_items = self._cached_base_method_totals.get(method, {})
                 rem_items = self._cached_rem_method_totals.get(method, {})
@@ -2762,23 +2784,23 @@ class MaterialCalculatorGUI(QMainWindow):
                     elif "crushing" in m_lower or "pulverizing" in m_lower or "grinding" in m_lower:
                         action = "Crush"
 
-                    depth_tag = f" <font color='#7f8c8d'>[Step Lvl {depths.get(item_id, 0)}]</font>" if "Prerequisites First" in sort_mode else ""
+                    depth_tag = f" <font color='{TEXT_OPTIONS['SL']['COLOR']}'>[Step Lvl {depths.get(item_id, 0)}]</font>" if "Prerequisites First" in sort_mode else ""
                     recipe_count = len(self.resolver.recipes.get(item_id, []))
-                    multi_badge = f" <font color='#e67e22' size='2'><b>[⚡ {recipe_count} Recipes]</b></font>" if recipe_count > 1 else ""
-                    origin_badge = f" <font color='#e74c3c' size='2'><b>[⚠️ Origin Unknown]</b></font>" if self.resolver.is_self_referential(item_id) else ""
+                    multi_badge = f" <font color='{TEXT_OPTIONS['RC']['COLOR']}' size='2'><b>[⚡ {recipe_count} Recipes]</b></font>" if recipe_count > 1 else ""
+                    origin_badge = f" <font color='{TEXT_OPTIONS['OU']['COLOR']}' size='2'><b>[⚠️️ Origin Unknown]</b></font>" if self.resolver.is_self_referential(item_id) else ""
                     
-                    complete_link = f" <a href='complete:{item_id}' style='color:#27ae60; font-size:11px; text-decoration:none;'>[✅ Mark Complete]</a>"
-                    raw_link = f" <a href='raw:{item_id}' style='color:#e67e22; font-size:11px; text-decoration:none;'>[🧱 Consider as Raw Material]</a>"
+                    complete_link = f" <a href='complete:{item_id}' style='color:{TEXT_OPTIONS['COMPLETE']['COLOR']}; font-size:11px; text-decoration:none;'>[✅ Mark Complete]</a>"
+                    raw_link = f" <a href='raw:{item_id}' style='color:{TEXT_OPTIONS['RM']['COLOR']}; font-size:11px; text-decoration:none;'>[🧱 Consider as Raw Material]</a>"
 
-                    counts_badge = f" <font color='#555' size='2'>(Required: <b>{req_amt}</b> | Remaining: <b>{rem_amt}</b> | Owned: <b>{owned_amt}</b>)</font>"
+                    counts_badge = f" <font color='{TEXT_OPTIONS['COUNT']['COLOR']}' size='2'>(Required: <b>{req_amt}</b> | Remaining: <b>{rem_amt}</b> | Owned: <b>{owned_amt}</b>)</font>"
 
                     html_blocks.append(
-                        f"<div style='margin-top:6px;'><b>• {action} <a href='item:{item_id}' style='color:#2980b9; text-decoration:none;'>{item_id}</a></b>{counts_badge}{multi_badge}{origin_badge}{depth_tag}{complete_link}{raw_link}</div>"
+                        f"<div style='margin-top:6px;'><b>• {action} <a href='item:{item_id}' style='color:{TEXT_OPTIONS['CII']['COLOR']}; text-decoration:none;'>{item_id}</a></b>{counts_badge}{multi_badge}{origin_badge}{depth_tag}{complete_link}{raw_link}</div>"
                     )
 
                     all_ing_ids = set(inputs.keys()) | set(rem_inputs.keys())
                     if all_ing_ids:
-                        html_blocks.append("<div style='margin-left: 24px; margin-top:2px; margin-bottom:6px; color:#555;'>")
+                        html_blocks.append(f"<div style='margin-left: 24px; margin-top:2px; margin-bottom:6px; color:{COLORS['DARK_GREY']};'>")
                         html_blocks.append("<i>↳ Inputs Required:</i><br/>")
                         for ing_id in sorted(list(all_ing_ids)):
                             ing_req = int(math.ceil(inputs.get(ing_id, 0)))
@@ -2786,31 +2808,31 @@ class MaterialCalculatorGUI(QMainWindow):
                             ing_owned = self.resolver.owned_inventory.get(ing_id, 0)
 
                             ing_recipe_count = len(self.resolver.recipes.get(ing_id, []))
-                            ing_badge = f" <font color='#e67e22' size='1'>[⚡ {ing_recipe_count} Recipes]</font>" if ing_recipe_count > 1 else ""
-                            ing_origin = f" <font color='#e74c3c' size='1'>[⚠️ Origin Unknown]</font>" if self.resolver.is_self_referential(ing_id) else ""
+                            ing_badge = f" <font color='{TEXT_OPTIONS['RC']['COLOR']}' size='1'>[⚡ {ing_recipe_count} Recipes]</font>" if ing_recipe_count > 1 else ""
+                            ing_origin = f" <font color='{TEXT_OPTIONS['OU']['COLOR']}' size='1'>[⚠️ Origin Unknown]</font>" if self.resolver.is_self_referential(ing_id) else ""
 
                             tag_badge = ""
                             if ing_id.startswith("#"):
                                 if ing_id in self.resolver.material_replacements:
                                     replaced_with = self.resolver.material_replacements[ing_id]
-                                    tag_badge = f" <font color='#27ae60' size='1'><b>[🏷️ Selected: {replaced_with}]</b></font>"
+                                    tag_badge = f" <font color='{TEXT_OPTIONS['RT']['COLOR']}' size='1'><b>[🏷️ Selected: {replaced_with}]</b></font>"
                                 else:
                                     matches = self.resolver.get_items_matching_tag(ing_id)
                                     if matches:
-                                        tag_badge = f" <font color='#2980b9' size='1'><b>[🏷️ {len(matches)} Options Available]</b></font>"
+                                        tag_badge = f" <font color='{TEXT_OPTIONS['TAGS']['COLOR']}' size='1'><b>[🏷️ {len(matches)} Options Available]</b></font>"
 
-                            ing_counts_badge = f" <font color='#7f8c8d' size='1'>(Req: <b>{ing_req}</b> | Rem: <b>{ing_rem}</b> | Owned: <b>{ing_owned}</b>)</font>"
+                            ing_counts_badge = f" <font color='{TEXT_OPTIONS['COUNT']['COLOR']}' size='1'>(Req: <b>{ing_req}</b> | Rem: <b>{ing_rem}</b> | Owned: <b>{ing_owned}</b>)</font>"
 
                             html_blocks.append(
-                                f"&nbsp;&nbsp;&nbsp;&nbsp;• <a href='item:{ing_id}' style='color:#27ae60; text-decoration:none;'>{ing_id}</a>{ing_counts_badge}{ing_badge}{ing_origin}{tag_badge}<br/>"
+                                f"&nbsp;&nbsp;&nbsp;&nbsp;• <a href='item:{ing_id}' style='color:{TEXT_OPTIONS['II']['COLOR']}; text-decoration:none;'>{ing_id}</a>{ing_counts_badge}{ing_badge}{ing_origin}{tag_badge}<br/>"
                             )
                         html_blocks.append("</div>")
 
         if self.resolver.completed_steps:
-            html_blocks.append("<h3 style='margin-top:16px; margin-bottom:4px; color:#27ae60;'>=== [ Completed Steps (Set Aside) ] ===</h3>")
+            html_blocks.append(f"<h3 style='margin-top:16px; margin-bottom:4px; color:{TEXT_OPTIONS['COMPLETE']['COLOR']};'>=== [ Completed Steps (Set Aside) ] ===</h3>")
             for comp_id in sorted(list(self.resolver.completed_steps)):
-                undo_link = f" <a href='complete:{comp_id}' style='color:#27ae60; font-size:11px; text-decoration:none;'>[↩️ Undo Mark Complete]</a>"
-                html_blocks.append(f"<div style='margin-top:2px; color:#7f8c8d;'>• <strike>{comp_id}</strike>{undo_link}</div>")
+                undo_link = f" <a href='complete:{comp_id}' style='color:{TEXT_OPTIONS['COMPLETE']['COLOR']}; font-size:11px; text-decoration:none;'>[↩️ Undo Mark Complete]</a>"
+                html_blocks.append(f"<div style='margin-top:2px; color:{COLORS['GREY']};'>• <strike>{comp_id}</strike>{undo_link}</div>")
 
         v_val = self.report_text.verticalScrollBar().value()
         self.report_text.setHtml("".join(html_blocks))
